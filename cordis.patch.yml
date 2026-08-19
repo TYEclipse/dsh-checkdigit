@@ -1,0 +1,4 @@
+# dsh-checkdigit bundle patch: mounts this plugin into the profile as one layer row.
+- insert:
+    - id: checkdigit
+      name: dsh-checkdigit
