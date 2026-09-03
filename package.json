@@ -1,7 +1,7 @@
 {
   "name": "dsh-checkdigit",
-  "version": "0.1.0",
-  "description": "Check-digit mathematics toolbox for DeepSeek Harness (dsh): generate, validate and detect check digits for Luhn, Verhoeff, Damm, ISBN-10/13, EAN-8/13, UPC-A, ISIN, CUSIP and IBAN — zero runtime dependencies",
+  "version": "0.2.0",
+  "description": "Check-digit mathematics toolbox for DeepSeek Harness (dsh): generate, validate and detect check digits for Luhn, Verhoeff, Damm, ISBN-10/13, EAN-8/13, UPC-A, ISIN, CUSIP, IBAN, CAS Registry Number and ABA routing number, plus ISBN-10 <-> ISBN-13 conversion — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

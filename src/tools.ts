@@ -1,23 +1,26 @@
 /**
- * Tool definitions for dsh-checkdigit: three tools exposed to every agent via
+ * Tool definitions for dsh-checkdigit: four tools exposed to every agent via
  * defineTool with strict JSON-schema parameter surfaces and compact text
  * renderers.
  *
  *   checkdigit_generate — compute the check digit(s) for a payload
  *   checkdigit_validate — verify a full identifier (auto-detect the scheme)
  *   checkdigit_info     — describe the supported schemes
+ *   isbn_convert        — convert ISBN-10 <-> ISBN-13 (978 prefix only)
  *
  * @module dsh-checkdigit/tools
  */
 
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { SCHEMES, SCHEME_IDS, detectScheme, schemeMetaList, type SchemeId } from './core.ts'
+import { convertIsbn, type IsbnConvertResult } from './isbn.ts'
 import { formatIban, ibanDetail, type IbanDetail } from './iban.ts'
 
 export interface ToolSet {
   checkdigit_generate: ToolDefinition
   checkdigit_validate: ToolDefinition
   checkdigit_info: ToolDefinition
+  isbn_convert: ToolDefinition
 }
 
 /** Successful generate result (keys assigned only when present — lossless JSON). */
@@ -92,12 +95,18 @@ function renderInfo(_args: unknown, value: unknown): string {
   return `supported check-digit schemes:\n${lines.join('\n')}`
 }
 
+function renderIsbnConvert(_args: { isbn: string }, value: unknown): string {
+  const result = value as IsbnConvertResult
+  if (!result.valid) return `isbn_convert: ${result.error}`
+  return `isbn_convert: ${result.source} ${result.direction === 'to13' ? '→' : '←'} ${result.converted} (${result.formatted})`
+}
+
 /** Build all three tool definitions. */
 export function buildCheckdigitTools(): ToolSet {
   const checkdigit_generate = defineTool({
     name: 'checkdigit_generate',
     description: 'Compute the check digit for a payload under a named scheme (luhn, verhoeff, damm, isbn10, isbn13, '
-      + 'ean8, ean13, upca, isin, cusip, iban) and return the complete identifier. For iban the payload is the '
+      + 'ean8, ean13, upca, isin, cusip, iban, cas, aba) and return the complete identifier. For iban the payload is the '
       + '2-letter country code followed by the BBAN, and the result is the two mod-97 check digits. Pure local '
       + 'arithmetic — use it to build test card numbers, ISBNs, barcodes or account numbers with correct check digits.',
     parameters: {
@@ -142,8 +151,9 @@ export function buildCheckdigitTools(): ToolSet {
   const checkdigit_validate = defineTool({
     name: 'checkdigit_validate',
     description: 'Verify the check digit of a full identifier. When scheme is omitted the scheme is auto-detected '
-      + '(iban, isin, cusip, ean13, upca, ean8, isbn10, then luhn). Reports validity, the check digit found, the '
-      + 'expected digit when wrong, and a human-readable explanation. Pure local arithmetic.',
+      + '(cas for hyphenated CAS Registry Numbers, isin, 9-digit ABA routing numbers, cusip, iban, ean13, upca, '
+      + 'ean8, isbn10, then luhn). Reports validity, the check digit found, the expected digit when wrong, and a '
+      + 'human-readable explanation. Pure local arithmetic.',
     parameters: {
       value: {
         type: 'string',
@@ -252,7 +262,41 @@ export function buildCheckdigitTools(): ToolSet {
     },
   })
 
-  return { checkdigit_generate, checkdigit_validate, checkdigit_info }
+  const isbn_convert = defineTool({
+    name: 'isbn_convert',
+    description: 'Convert an ISBN-10 to ISBN-13 (prepend the 978 Bookland prefix, recompute the EAN-13 check digit) '
+      + 'or an ISBN-13 back to ISBN-10 (only the 978 prefix; 979-prefixed ISBN-13s have no ISBN-10 equivalent). The '
+      + 'input check digit is verified first; hyphens and spaces are ignored and the input grouping is preserved in '
+      + 'the formatted output. Pure local arithmetic.',
+    parameters: {
+      isbn: {
+        type: 'string',
+        required: true,
+        description: 'An ISBN-10 (9 digits + digit/X) or ISBN-13 (13 digits), with or without hyphens/spaces, '
+          + 'e.g. "0-306-40615-2" or "9780306406157". Case-insensitive X.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          direction: { type: 'string', enum: ['to13', 'to10'] },
+          source: { type: 'string' },
+          converted: { type: 'string' },
+          formatted: { type: 'string' },
+          error: { type: 'string' },
+        },
+      },
+      render: (_args: { isbn: string }, value: unknown) => [{ type: 'text', text: renderIsbnConvert(_args, value) }],
+    },
+    async execute(args: { isbn: string }): Promise<IsbnConvertResult> {
+      return convertIsbn(args.isbn)
+    },
+  })
+
+  return { checkdigit_generate, checkdigit_validate, checkdigit_info, isbn_convert }
 }
 
 /** Re-export for consumers that need the formatter directly. */

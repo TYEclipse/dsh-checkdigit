@@ -28,6 +28,18 @@ describe('checkdigit_generate', () => {
       checkDigit: '5',
       complete: 'US0378331005',
     })
+    expect(await tools.checkdigit_generate.execute({ scheme: 'cas', payload: '773218' })).toEqual({
+      valid: true,
+      scheme: 'cas',
+      checkDigit: '5',
+      complete: '7732185',
+    })
+    expect(await tools.checkdigit_generate.execute({ scheme: 'aba', payload: '02100002' })).toEqual({
+      valid: true,
+      scheme: 'aba',
+      checkDigit: '1',
+      complete: '021000021',
+    })
   })
 
   it('returns valid:false with an error for malformed payloads', async () => {
@@ -64,6 +76,22 @@ describe('checkdigit_validate', () => {
     expect(result.valid).toBe(true)
   })
 
+  it('auto-detects CAS and ABA schemes', async () => {
+    expect(await tools.checkdigit_validate.execute({ value: '7732-18-5' })).toMatchObject({
+      valid: true,
+      scheme: 'cas',
+      checkDigit: '5',
+    })
+    expect(await tools.checkdigit_validate.execute({ value: '021000021' })).toMatchObject({
+      valid: true,
+      scheme: 'aba',
+      checkDigit: '1',
+    })
+    const badAba = await tools.checkdigit_validate.execute({ value: '021000022' })
+    expect(badAba.valid).toBe(false)
+    expect(badAba.expected).toBe('1')
+  })
+
   it('rejects unrecognizable values gracefully', async () => {
     const result = await tools.checkdigit_validate.execute({ value: 'not-an-identifier' })
     expect(result.valid).toBe(false)
@@ -74,14 +102,95 @@ describe('checkdigit_validate', () => {
 describe('checkdigit_info', () => {
   it('lists all schemes', async () => {
     const result = await tools.checkdigit_info.execute({})
-    expect(result.schemes.length).toBe(11)
+    expect(result.schemes.length).toBe(13)
     expect(result.schemes.map((s) => s.id)).toContain('iban')
+    expect(result.schemes.map((s) => s.id)).toContain('cas')
+    expect(result.schemes.map((s) => s.id)).toContain('aba')
   })
 
   it('filters to one scheme', async () => {
     const result = await tools.checkdigit_info.execute({ scheme: 'iban' })
     expect(result.schemes).toHaveLength(1)
     expect(result.schemes[0]?.name).toContain('IBAN')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isbn_convert
+// ---------------------------------------------------------------------------
+
+/** Recursive guard: no key may hold undefined (lossless-JSON gate, R7/R18). */
+function assertNoUndefined(value: unknown, path: string): void {
+  if (value === null) return
+  if (typeof value === 'object') {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      expect(child, `${path}.${key}`).not.toBeUndefined()
+      assertNoUndefined(child, `${path}.${key}`)
+    }
+  }
+}
+
+describe('isbn_convert', () => {
+  it('converts ISBN-10 to ISBN-13 (978 prefix, recomputed check)', async () => {
+    expect(await tools.isbn_convert.execute({ isbn: '0306406152' })).toEqual({
+      valid: true,
+      direction: 'to13',
+      source: '0306406152',
+      converted: '9780306406157',
+      formatted: '9780306406157',
+    })
+  })
+
+  it('preserves hyphen grouping in the formatted output', async () => {
+    const result = await tools.isbn_convert.execute({ isbn: '0-306-40615-2' })
+    expect(result).toEqual({
+      valid: true,
+      direction: 'to13',
+      source: '0306406152',
+      converted: '9780306406157',
+      formatted: '978-0-306-40615-7',
+    })
+    assertNoUndefined(result, 'isbn_convert')
+  })
+
+  it('converts ISBN-13 back to ISBN-10 (978 prefix only)', async () => {
+    const result = await tools.isbn_convert.execute({ isbn: '978-0-306-40615-7' })
+    expect(result).toEqual({
+      valid: true,
+      direction: 'to10',
+      source: '9780306406157',
+      converted: '0306406152',
+      formatted: '0-306-40615-2',
+    })
+    assertNoUndefined(result, 'isbn_convert')
+  })
+
+  it('handles X check digits (080442957X -> 9780804429573)', async () => {
+    const result = await tools.isbn_convert.execute({ isbn: '0-8044-2957-X' })
+    expect(result.valid).toBe(true)
+    expect(result.converted).toBe('9780804429573')
+    expect(result.formatted).toBe('978-0-8044-2957-3')
+    assertNoUndefined(result, 'isbn_convert')
+  })
+
+  it('reports 979-prefixed ISBN-13 as having no ISBN-10 equivalent', async () => {
+    const result = await tools.isbn_convert.execute({ isbn: '9791090636071' })
+    expect(result.valid).toBe(false)
+    if (!result.valid) expect(result.error).toContain('979')
+    assertNoUndefined(result, 'isbn_convert')
+  })
+
+  it('verifies the source check digit before converting', async () => {
+    const result = await tools.isbn_convert.execute({ isbn: '0306406153' })
+    expect(result.valid).toBe(false)
+    if (!result.valid) expect(result.error).toContain('should be 2')
+    assertNoUndefined(result, 'isbn_convert')
+  })
+
+  it('rejects non-ISBN input gracefully', async () => {
+    const result = await tools.isbn_convert.execute({ isbn: 'not-an-isbn' })
+    expect(result.valid).toBe(false)
+    assertNoUndefined(result, 'isbn_convert')
   })
 })
 

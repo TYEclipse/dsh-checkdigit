@@ -1,12 +1,12 @@
 # dsh-checkdigit
 
-Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate and detect check digits for **11 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, ISIN, CUSIP and IBAN.
+Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate and detect check digits for **13 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, ISIN, CUSIP, IBAN, **CAS Registry Number** and **ABA routing number** — plus an **ISBN-10 ⇄ ISBN-13 converter**.
 
-> 校验位数学工具箱：生成 / 验证 / 识别 11 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、ISIN、CUSIP、IBAN），零运行时依赖、纯本地算术。
+> 校验位数学工具箱：生成 / 验证 / 识别 13 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、ISIN、CUSIP、IBAN、CAS 化学文摘号、ABA 美国银行路由号），另带 ISBN-10 与 ISBN-13 互转工具；零运行时依赖、纯本地算术。
 
 ## Why
 
-Language models routinely botch check-digit arithmetic: wrong card-number checksums, ISBNs that fail validation, IBANs with impossible check digits. Every algorithm here is implemented from its published specification with **pure integer arithmetic** — deterministic, offline, zero runtime dependencies — and cross-checked against published worked examples (Apple's `US0378331005`, the classic `GB82 WEST 1234 5698 7654 32`, the Luhn textbook example `79927398713`, and more).
+Language models routinely botch check-digit arithmetic: wrong card-number checksums, ISBNs that fail validation, IBANs with impossible check digits. Every algorithm here is implemented from its published specification with **pure integer arithmetic** — deterministic, offline, zero runtime dependencies — and cross-checked against published worked examples (Apple's `US0378331005`, the classic `GB82 WEST 1234 5698 7654 32`, the Luhn textbook example `79927398713`, water's CAS number `7732-18-5`, and more).
 
 ## Install
 
@@ -42,16 +42,24 @@ Supported `scheme` values and their payloads:
 | `isin`    | 2 letters + 9 alphanumerics         | 12th char (digit)| `US0378331005` |
 | `cusip`   | 8 chars from `[A-Z0-9*@#]`          | 9th char (digit) | `037833100` |
 | `iban`    | 2-letter country + BBAN             | chars 3–4 (two digits) | `GB82WEST12345698765432` |
+| `cas`     | 2–9 digits (hyphens ignored)        | last digit       | `7732-18-5` |
+| `aba`     | 8 digits                            | 9th digit        | `021000021` |
 
-Use it to build test card numbers, ISBNs, barcodes, securities identifiers or account numbers whose check digits actually verify.
+Use it to build test card numbers, ISBNs, barcodes, securities identifiers, routing numbers or account numbers whose check digits actually verify.
 
 ### `checkdigit_validate`
 
-Verify the check digit of a full identifier. The scheme is auto-detected when omitted (ISIN → CUSIP → IBAN → EAN-13 → UPC-A → EAN-8 → ISBN-10 → Luhn); pass `scheme` to force one.
+Verify the check digit of a full identifier. The scheme is auto-detected when omitted (CAS hyphenated → ISIN → 9-digit ABA → CUSIP → IBAN → EAN-13 → UPC-A → EAN-8 → ISBN-10 → Luhn); pass `scheme` to force one.
 
 ```text
 checkdigit_validate(value="GB82WEST12345698765432")
 → valid: true, scheme: "iban", iban.country: "GB", iban.formatted: "GB82 WEST 1234 5698 7654 32"
+
+checkdigit_validate(value="7732-18-5")
+→ valid: true, scheme: "cas", checkDigit: "5"
+
+checkdigit_validate(value="021000021")
+→ valid: true, scheme: "aba", checkDigit: "1"
 
 checkdigit_validate(value="79927398714")
 → valid: false, scheme: "luhn", checkDigit: "4", expected: "3",
@@ -62,7 +70,24 @@ Spaces and dashes in the input are ignored. When a value is invalid, the result 
 
 ### `checkdigit_info`
 
-Describe the supported schemes: identifier lengths, payload formats, check-digit positions and worked examples. Call with a `scheme` for one scheme, or without arguments for all 11.
+Describe the supported schemes: identifier lengths, payload formats, check-digit positions and worked examples. Call with a `scheme` for one scheme, or without arguments for all 13.
+
+### `isbn_convert`
+
+Convert between ISBN-10 and ISBN-13 in both directions. The source check digit is verified first; the 978 Bookland prefix is prepended (10→13) or dropped (13→10) and the target check digit recomputed. Hyphen grouping from the input is preserved in `formatted`.
+
+```text
+isbn_convert(isbn="0-306-40615-2")
+→ valid: true, direction: "to13", converted: "9780306406157", formatted: "978-0-306-40615-7"
+
+isbn_convert(isbn="978-0-306-40615-7")
+→ valid: true, direction: "to10", converted: "0306406152", formatted: "0-306-40615-2"
+
+isbn_convert(isbn="9791090636071")
+→ valid: false, error: "ISBN-13 with the 979 prefix has no ISBN-10 equivalent; only the 978 Bookland prefix maps back to ISBN-10"
+```
+
+ISBN-10 check digits may be `X` (value 10): `0-8044-2957-X` → `978-0-8044-2957-3`.
 
 ## Supported schemes
 
@@ -78,13 +103,15 @@ Describe the supported schemes: identifier lengths, payload formats, check-digit
 | ISIN | ISO 6166 | Securities; letters expand A=10…Z=35, then Luhn |
 | CUSIP | ANSI X9.6 | North American securities; `* @ #` allowed; even positions doubled |
 | IBAN | ISO 13616 | Mod-97 over letter-expanded rearranged string; BBAN length table for 75+ countries |
+| CAS Registry Number | CAS | Chemical substances; digit × position-from-right sum mod 10 |
+| ABA routing number | US Federal Reserve | Bank routing transit numbers; 3-7-1 weighted sum mod 10 |
 
 ## Development
 
 ```bash
 pnpm install
 pnpm build
-pnpm test   # 51 tests, anchors cross-checked against published worked examples
+pnpm test   # 67 tests, anchors cross-checked against published worked examples
 pnpm lint
 ```
 

@@ -9,7 +9,7 @@
  * @module dsh-checkdigit/core
  */
 /** Identifiers of every supported check-digit scheme. */
-export declare const SCHEME_IDS: readonly ["luhn", "verhoeff", "damm", "isbn10", "isbn13", "ean8", "ean13", "upca", "isin", "cusip", "iban"];
+export declare const SCHEME_IDS: readonly ["luhn", "verhoeff", "damm", "isbn10", "isbn13", "ean8", "ean13", "upca", "isin", "cusip", "iban", "cas", "aba"];
 export type SchemeId = (typeof SCHEME_IDS)[number];
 export interface SchemeMeta {
     id: SchemeId;
@@ -33,6 +33,10 @@ export interface CheckResult {
     /** Human-readable explanation of the arithmetic. */
     detail: string;
 }
+declare function isbn10Check(payload: string): string;
+declare function weightedMod10Check(payload: string, weights: readonly number[]): string;
+declare const EAN13_WEIGHTS: number[];
+export { isbn10Check, weightedMod10Check, EAN13_WEIGHTS as ISBN13_WEIGHTS };
 export interface SchemeSpec {
     meta: SchemeMeta;
     generate: (payload: string) => string;
