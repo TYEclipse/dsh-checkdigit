@@ -1,11 +1,12 @@
 /**
- * Tool definitions for dsh-checkdigit: three tools exposed to every agent via
+ * Tool definitions for dsh-checkdigit: four tools exposed to every agent via
  * defineTool with strict JSON-schema parameter surfaces and compact text
  * renderers.
  *
  *   checkdigit_generate — compute the check digit(s) for a payload
  *   checkdigit_validate — verify a full identifier (auto-detect the scheme)
  *   checkdigit_info     — describe the supported schemes
+ *   isbn_convert        — convert ISBN-10 <-> ISBN-13 (978 prefix only)
  *
  * @module dsh-checkdigit/tools
  */
@@ -15,6 +16,7 @@ export interface ToolSet {
     checkdigit_generate: ToolDefinition;
     checkdigit_validate: ToolDefinition;
     checkdigit_info: ToolDefinition;
+    isbn_convert: ToolDefinition;
 }
 /** Successful generate result (keys assigned only when present — lossless JSON). */
 export interface GenerateOk {

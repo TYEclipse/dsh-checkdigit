@@ -24,6 +24,8 @@ export const SCHEME_IDS = [
   'isin',
   'cusip',
   'iban',
+  'cas',
+  'aba',
 ] as const
 
 export type SchemeId = (typeof SCHEME_IDS)[number]
@@ -238,6 +240,47 @@ function cusipCheck(payload: string): string {
   }
   return String((10 - (sum % 10)) % 10)
 }
+
+// ---------------------------------------------------------------------------
+// CAS Registry Number — chemical substance identifier, written XXXX-XX-X.
+// Check digit = sum over the payload digits of (digit x position counted from
+// the right), mod 10. E.g. water 7732-18-5: 8*1+1*2+2*3+3*4+7*5+7*6 = 105 -> 5.
+// ---------------------------------------------------------------------------
+
+function casCheck(payload: string): string {
+  let sum = 0
+  for (let i = 0; i < payload.length; i++) {
+    const position = payload.length - i
+    sum += (payload.charCodeAt(i) - 48) * position
+  }
+  return String(sum % 10)
+}
+
+// ---------------------------------------------------------------------------
+// ABA routing transit number (US) — 8 payload digits + 1 check digit, weights
+// 3,7,1 repeating from the left; the weighted sum must be a multiple of 10.
+// ---------------------------------------------------------------------------
+
+const ABA_WEIGHTS = [3, 7, 1] as const
+
+function abaCheck(payload: string): string {
+  let sum = 0
+  for (let i = 0; i < payload.length; i++) {
+    sum += (payload.charCodeAt(i) - 48) * (ABA_WEIGHTS[i % 3] ?? 0)
+  }
+  return String((10 - (sum % 10)) % 10)
+}
+
+/** True when a full 9-digit value satisfies the ABA mod-10 weighted check. */
+function abaPasses(value: string): boolean {
+  return abaCheck(value.slice(0, 8)) === value.slice(8)
+}
+
+// ---------------------------------------------------------------------------
+// ISBN-10 <-> ISBN-13 conversion helpers (used by the isbn_convert tool).
+// ---------------------------------------------------------------------------
+
+export { isbn10Check, weightedMod10Check, EAN13_WEIGHTS as ISBN13_WEIGHTS }
 
 // ---------------------------------------------------------------------------
 // Shared generate/validate API. Every generator throws on a malformed
@@ -528,6 +571,56 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
     generate: generateIbanCheck,
     validate: validateIban,
   },
+  cas: {
+    meta: {
+      id: 'cas',
+      name: 'CAS Registry Number',
+      description: 'Chemical substance identifier, usually written XXXX-XX-X: check digit = sum of digit x position-from-right mod 10.',
+      length: '3–10 digits',
+      payload: '2–9 digits (hyphenated input is normalised)',
+      check: 'last digit',
+      example: '7732-18-5',
+    },
+    generate(payload: string): string {
+      const p = payload.replace(/[\s-]/g, '')
+      if (!DIGITS.test(p)) throw new Error('cas payload must be digits only')
+      if (p.length < 2 || p.length > 9) throw new Error(`cas payload must be 2-9 digits, got ${p.length}`)
+      return casCheck(p)
+    },
+    validate(value: string): CheckResult {
+      const normalized = value.replace(/[\s-]/g, '')
+      if (!DIGITS.test(normalized) || normalized.length < 3 || normalized.length > 10) {
+        return { valid: false, checkDigit: '', expected: '', detail: 'cas value must be 3-10 digits (e.g. 7732-18-5)' }
+      }
+      const { payload, check } = splitLast(normalized)
+      const expected = casCheck(payload)
+      const ok = check === expected
+      return {
+        valid: ok,
+        checkDigit: check,
+        expected,
+        detail: ok
+          ? `CAS: check digit ${check} matches the position-weighted mod-10 sum`
+          : `CAS: check digit should be ${expected}, but the value ends in ${check}`,
+      }
+    },
+  },
+  aba: numericScheme(
+    {
+      id: 'aba',
+      name: 'ABA routing number (US)',
+      description: 'Nine-digit US bank routing transit number: weights 3,7,1 repeating; the weighted sum is a multiple of 10.',
+      length: '9',
+      payload: '8 digits',
+      check: '9th digit',
+      example: '021000021',
+    },
+    8,
+    abaCheck,
+    undefined,
+    /^\d+$/,
+    (v) => v.replace(/[\s-]/g, ''),
+  ),
 }
 
 /**
@@ -535,10 +628,16 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
  * formats (ISIN, CUSIP, ISBN-10) are tested before the loose digit fallbacks.
  */
 export function detectScheme(value: string): SchemeId | undefined {
+  // CAS Registry Numbers are written hyphenated with a single-digit last
+  // group (e.g. 7732-18-5) — check the raw shape before hyphens are stripped.
+  if (/^\d{2,7}-\d{2}-\d$/.test(value.trim())) return 'cas'
   const normalized = value.replace(/[\s-]/g, '').toUpperCase()
   // ISIN and CUSIP first: an ISIN (12 chars) would otherwise match the IBAN
   // shape if it were tested without a length bound.
   if (ISIN_RE.test(normalized)) return 'isin'
+  // 9-digit values that satisfy the ABA 3-7-1 weighted check are routing
+  // numbers; the rest stay CUSIP-shaped (CUSIP payloads are usually letters).
+  if (/^\d{9}$/.test(normalized) && abaPasses(normalized)) return 'aba'
   if (CUSIP_RE.test(normalized)) return 'cusip'
   // IBAN: 2 letters + 2 check digits + BBAN of 11..28 -> total length 15..32.
   if (/^[A-Z]{2}\d{2}[A-Z0-9]{11,28}$/.test(normalized)) return 'iban'

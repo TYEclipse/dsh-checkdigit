@@ -1,9 +1,10 @@
 /**
  * dsh-checkdigit — check-digit mathematics toolbox for DeepSeek Harness.
  *
- * Generate, validate and detect check digits for eleven schemes — Luhn,
- * Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, ISIN, CUSIP and
- * IBAN — with pure integer arithmetic and zero runtime dependencies.
+ * Generate, validate and detect check digits for thirteen schemes — Luhn,
+ * Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, ISIN, CUSIP, IBAN,
+ * CAS Registry Number and ABA routing number — plus ISBN-10 <-> ISBN-13
+ * conversion, with pure integer arithmetic and zero runtime dependencies.
  *
  * Everything is deterministic and offline: no network, no shell, no external
  * services. Ideal for the places where a model's mental arithmetic fails:

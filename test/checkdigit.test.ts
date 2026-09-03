@@ -199,6 +199,65 @@ describe('cusip', () => {
 })
 
 // ---------------------------------------------------------------------------
+// CAS Registry Number
+// ---------------------------------------------------------------------------
+
+describe('cas', () => {
+  it('generates check digits for published real-world chemicals', () => {
+    expect(SCHEMES.cas.generate('773218')).toBe('5') // water
+    expect(SCHEMES.cas.generate('5099')).toBe('7') // glucose
+    expect(SCHEMES.cas.generate('764714')).toBe('5') // sodium chloride
+    expect(SCHEMES.cas.generate('10390')).toBe('2') // paracetamol
+  })
+
+  it('validates published real-world CAS numbers (hyphenated and plain)', () => {
+    expect(SCHEMES.cas.validate('7732-18-5').valid).toBe(true)
+    expect(SCHEMES.cas.validate('7732185').valid).toBe(true)
+    expect(SCHEMES.cas.validate('50-99-7').valid).toBe(true)
+    expect(SCHEMES.cas.validate('58-08-2').valid).toBe(true)
+    expect(SCHEMES.cas.validate('50-78-2').valid).toBe(true)
+  })
+
+  it('rejects wrong check digits and malformed shapes', () => {
+    const bad = SCHEMES.cas.validate('7732-18-6')
+    expect(bad.valid).toBe(false)
+    expect(bad.expected).toBe('5')
+    expect(SCHEMES.cas.validate('64-17-4').valid).toBe(false)
+    expect(SCHEMES.cas.validate('1-2').valid).toBe(false) // too short after strip
+    expect(() => SCHEMES.cas.generate('1234567890')).toThrow() // >9 payload digits
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ABA routing number (US)
+// ---------------------------------------------------------------------------
+
+describe('aba', () => {
+  it('generates check digits for published real-world routing numbers', () => {
+    expect(SCHEMES.aba.generate('02100002')).toBe('1') // JPMorgan Chase NY
+    expect(SCHEMES.aba.generate('01140153')).toBe('3') // Bank of America RI
+    expect(SCHEMES.aba.generate('09100001')).toBe('9') // Wells Fargo MN
+    expect(SCHEMES.aba.generate('12100035')).toBe('8') // Bank of America CA
+  })
+
+  it('validates published real-world routing numbers', () => {
+    expect(SCHEMES.aba.validate('021000021').valid).toBe(true)
+    expect(SCHEMES.aba.validate('011401533').valid).toBe(true)
+    expect(SCHEMES.aba.validate('091000019').valid).toBe(true)
+    expect(SCHEMES.aba.validate('121000358').valid).toBe(true)
+  })
+
+  it('rejects wrong check digits and malformed shapes', () => {
+    const bad = SCHEMES.aba.validate('021000022')
+    expect(bad.valid).toBe(false)
+    expect(bad.expected).toBe('1')
+    expect(SCHEMES.aba.validate('091000018').valid).toBe(false)
+    expect(SCHEMES.aba.validate('02100002').valid).toBe(false) // 8 digits, not 9
+    expect(() => SCHEMES.aba.generate('0210000')).toThrow() // 7 payload digits
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Scheme detection
 // ---------------------------------------------------------------------------
 
@@ -221,5 +280,17 @@ describe('detectScheme', () => {
   it('falls back to luhn for loose digit strings and unknown for garbage', () => {
     expect(detectScheme('79927398713')).toBe('luhn')
     expect(detectScheme('hello world')).toBeUndefined()
+  })
+
+  it('detects hyphenated CAS Registry Numbers before luhn', () => {
+    expect(detectScheme('7732-18-5')).toBe('cas')
+    expect(detectScheme('50-99-7')).toBe('cas')
+    expect(detectScheme('7732185')).toBe('luhn') // un-hyphenated is ambiguous
+  })
+
+  it('detects 9-digit ABA routing numbers before cusip', () => {
+    expect(detectScheme('021000021')).toBe('aba')
+    expect(detectScheme('091000019')).toBe('aba')
+    expect(detectScheme('037833100')).toBe('cusip') // fails the ABA weighted check
   })
 })
