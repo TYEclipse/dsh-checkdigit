@@ -1,6 +1,6 @@
 # dsh-checkdigit · 校验位数学工具箱
 
-DeepSeek Harness 插件：为 **13 种校验位方案**提供生成、验证与识别——Luhn、Verhoeff、Damm、ISBN-10、ISBN-13、EAN-8、EAN-13、UPC-A、ISIN、CUSIP、IBAN、CAS 化学文摘号、ABA 美国银行路由号；另带 **ISBN-10 ⇄ ISBN-13 互转**工具。
+DeepSeek Harness 插件：为 **15 种校验位方案**提供生成、验证、修复与识别——Luhn、Verhoeff、Damm、ISBN-10、ISBN-13、EAN-8、EAN-13、UPC-A、GTIN-14、ISSN、ISIN、CUSIP、IBAN、CAS 化学文摘号、ABA 美国银行路由号；另带 **ISBN-10 ⇄ ISBN-13 互转**、以及「单字符修复」搜索工具（「这个号最可能原本是什么？」）。
 
 **零运行时依赖**、纯本地整数算术、无网络无外部服务。所有算法按公开规范实现，并与公开标准例交叉验证（Apple `US0378331005`、经典 `GB82 WEST 1234 5698 7654 32`、Luhn 教科书例 `79927398713`、水的 CAS 号 `7732-18-5` 等）。
 
@@ -16,10 +16,11 @@ dsh plugin --profile web add github:TYEclipse/dsh-checkdigit
 
 安装后在 profile 的 `package.json` 的 `dsh.profile.bundles` 中加入 `"dsh-checkdigit"`（若未自动激活），重启 dsh。
 
-## 四个工具
+## 五个工具
 
 - `checkdigit_generate` —— 给 payload 计算校验位，返回完整标识符（如 `7992739871` → 校验位 `3` → `79927398713`；`GBWEST12345698765432` → 校验位 `82` → `GB82WEST12345698765432`；`02100002` → `021000021`）
-- `checkdigit_validate` —— 校验完整标识符；省略 scheme 时自动识别（CAS 连字符式 → ISIN → 9 位 ABA → CUSIP → IBAN → EAN-13 → UPC-A → EAN-8 → ISBN-10 → Luhn）；出错时返回**期望的校验位**便于程序化修复
+- `checkdigit_validate` —— 校验完整标识符；省略 scheme 时自动识别（CAS 连字符式 → ISIN → 9 位 ABA → CUSIP → IBAN → EAN-13 → UPC-A → ISSN（以 X 结尾）→ EAN-8 → ISBN-10 → Luhn）；出错时返回**期望的校验位**便于程序化修复。空格、连字符、点号一律忽略（`4111 1111 1111 1111`、`978-0-306-40615-7`、`0378-5955` 都能直接校验）
+- `checkdigit_repair` —— 值不合法时，枚举能让它合法的**单字符改动**：改校验位、相邻两位互换、改动一个数据位；每条结果都由方案自身的校验器确认，按可能性排序。`total` 给出完整数量，返回列表上限 20 条（`truncated: true`）。IBAN 会同时给出两种合理解释（保留账号重算校验位 / 保留校验位改账号数字）
 - `checkdigit_info` —— 列出各方案的格式、长度、校验位位置与示例
 - `isbn_convert` —— ISBN-10 与 ISBN-13 互转：先验证输入校验位，10→13 加 978 前缀、13→10 仅限 978 前缀（979 无 ISBN-10 等价物），保留输入的连字符分组。如 `0-306-40615-2` → `978-0-306-40615-7`；校验位可为 `X`：`0-8044-2957-X` → `978-0-8044-2957-3`
 
@@ -33,6 +34,8 @@ dsh plugin --profile web add github:TYEclipse/dsh-checkdigit
 | ISBN-10 | ISO 2108 | 模 11，校验位可为 X（=10） |
 | ISBN-13 | ISO 2108 | 与 EAN-13 同算术 |
 | EAN-8 / EAN-13 | GS1 GTIN | 零售条码 |
+| GTIN-14 / SSCC-18 | GS1 GTIN-14 | 物流箱码/托盘码；13 位数据 + 与 EAN/UPC 同款模 10 加权 |
+| ISSN | ISO 3297 | 连续出版物号；模 11，校验字符可为 X |
 | UPC-A | GS1 GTIN-12 | 北美零售条码 |
 | ISIN | ISO 6166 | 证券代码；字母展开 A=10…Z=35 后 Luhn |
 | CUSIP | ANSI X9.6 | 北美证券代码；`* @ #` 合法；偶数位加倍 |
@@ -45,9 +48,12 @@ dsh plugin --profile web add github:TYEclipse/dsh-checkdigit
 ```bash
 pnpm install
 pnpm build
-pnpm test   # 67 个测试，锚点与公开标准例交叉验证
+pnpm test   # 91 个测试
 pnpm lint
+python3 test/oracle/anchors.py   # 所有数值断言的独立出处
 ```
+
+测试期望值不靠手算：`test/oracle/anchors.py` 用 Python 按公开规范独立实现各方案，并打印测试里断言的每一个锚点（含修复数量与位置）。需要复核时直接运行它。
 
 ## 许可
 

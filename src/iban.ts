@@ -61,7 +61,7 @@ function mod97(digits: string): number {
 
 /** Split a value into the four IBAN parts (case-normalized, no spaces). */
 function parseIban(value: string): { country: string; checkDigits: string; bban: string } | undefined {
-  const normalized = value.toUpperCase().replace(/[\s-]/g, '')
+  const normalized = value.toUpperCase().replace(/[\s.-]/g, '')
   if (!IBAN_RE.test(normalized)) return undefined
   return { country: normalized.slice(0, 2), checkDigits: normalized.slice(2, 4), bban: normalized.slice(4) }
 }
@@ -84,7 +84,7 @@ export function ibanLength(country: string): number | undefined {
 }
 
 export function formatIban(iban: string): string {
-  const normalized = iban.toUpperCase().replace(/[\s-]/g, '')
+  const normalized = iban.toUpperCase().replace(/[\s.-]/g, '')
   return normalized.match(/.{1,4}/g)?.join(' ') ?? normalized
 }
 
@@ -132,7 +132,7 @@ export function ibanDetail(value: string): IbanDetail | undefined {
  * Throws on malformed payloads — the scheme-level generate contract.
  */
 export function generateIbanCheck(payload: string): string {
-  const normalized = payload.toUpperCase().replace(/[\s-]/g, '')
+  const normalized = payload.toUpperCase().replace(/[\s.-]/g, '')
   if (!/^[A-Z]{2}[A-Z0-9]{1,28}$/.test(normalized)) {
     throw new Error('iban payload must be a 2-letter country code followed by the BBAN (letters/digits, ≤ 28 chars)')
   }

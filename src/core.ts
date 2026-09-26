@@ -21,6 +21,8 @@ export const SCHEME_IDS = [
   'ean8',
   'ean13',
   'upca',
+  'gtin14',
+  'issn',
   'isin',
   'cusip',
   'iban',
@@ -55,6 +57,11 @@ export interface CheckResult {
 }
 
 const DIGITS = /^\d+$/
+
+/** Strip the separators people actually type: spaces, dashes and dots. */
+function flatten(value: string): string {
+  return value.replace(/[\s.-]/g, '')
+}
 
 /** Split a value into payload + trailing check digit. */
 function splitLast(value: string): { payload: string; check: string } {
@@ -193,6 +200,23 @@ function weightedMod10Check(payload: string, weights: readonly number[]): string
 const EAN8_WEIGHTS = [3, 1] // position 1 gets weight 3
 const EAN13_WEIGHTS = [1, 3] // position 1 gets weight 1
 const UPCA_WEIGHTS = [3, 1] // position 1 gets weight 3
+const GTIN14_WEIGHTS = [3, 1] // position 1 gets weight 3 (13-digit payload is odd)
+
+// ---------------------------------------------------------------------------
+// ISSN — 8 characters: 7 digits + a mod-11 check digit that may be X. Weights
+// on the payload run 8,7,…,2; the check digit is 11 - (sum mod 11), where a
+// result of 11 becomes 0 and a result of 10 becomes X.
+// Example: 0378-5955 -> payload 0378595, weighted sum 160, 160 mod 11 = 6 -> 5.
+// ---------------------------------------------------------------------------
+
+function issnCheck(payload: string): string {
+  let sum = 0
+  for (let i = 0; i < 7; i++) {
+    sum += (8 - i) * (payload.charCodeAt(i) - 48)
+  }
+  const r = sum % 11
+  return r === 0 ? '0' : r === 1 ? 'X' : String(11 - r)
+}
 
 // ---------------------------------------------------------------------------
 // ISIN (ISO 6166) — 2 letters + 9 alphanumerics + 1 check digit. Letters are
@@ -310,7 +334,10 @@ function numericScheme(
       return generator(payload)
     },
     validate(value: string): CheckResult {
-      const normalized = normalize === undefined ? value : normalize(value)
+      // Separators are always dropped; `normalize` then handles case folding
+      // for the schemes whose check character may be X.
+      const flat = flatten(value)
+      const normalized = normalize === undefined ? flat : normalize(flat)
       if (!valuePattern.test(normalized)) {
         return { valid: false, checkDigit: '', expected: '', detail: `${meta.id} value must be digits only` }
       }
@@ -348,10 +375,11 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
       return luhnCheck(payload)
     },
     validate(value: string): CheckResult {
-      if (!DIGITS.test(value) || value.length < 2) {
+      const flat = flatten(value)
+      if (!DIGITS.test(flat) || flat.length < 2) {
         return { valid: false, checkDigit: '', expected: '', detail: 'luhn value must be at least 2 digits' }
       }
-      const { payload, check } = splitLast(value)
+      const { payload, check } = splitLast(flat)
       const expected = luhnCheck(payload)
       const ok = check === expected
       return {
@@ -379,18 +407,19 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
       return verhoeffCheck(payload)
     },
     validate(value: string): CheckResult {
-      if (!DIGITS.test(value) || value.length < 2) {
+      const flat = flatten(value)
+      if (!DIGITS.test(flat) || flat.length < 2) {
         return { valid: false, checkDigit: '', expected: '', detail: 'verhoeff value must be at least 2 digits' }
       }
-      const ok = verhoeffTally(value) === 0
-      const { payload, check } = splitLast(value)
+      const ok = verhoeffTally(flat) === 0
+      const { payload, check } = splitLast(flat)
       return {
         valid: ok,
         checkDigit: check,
         expected: ok ? check : verhoeffCheck(payload),
         detail: ok
           ? 'Verhoeff: the dihedral tally over the full value is zero'
-          : `Verhoeff: the dihedral tally over the full value is ${verhoeffTally(value)}, not zero`,
+          : `Verhoeff: the dihedral tally over the full value is ${verhoeffTally(flat)}, not zero`,
       }
     },
   },
@@ -409,18 +438,19 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
       return String(dammTally(payload))
     },
     validate(value: string): CheckResult {
-      if (!DIGITS.test(value) || value.length < 2) {
+      const flat = flatten(value)
+      if (!DIGITS.test(flat) || flat.length < 2) {
         return { valid: false, checkDigit: '', expected: '', detail: 'damm value must be at least 2 digits' }
       }
-      const ok = dammTally(value) === 0
-      const { payload, check } = splitLast(value)
+      const ok = dammTally(flat) === 0
+      const { payload, check } = splitLast(flat)
       return {
         valid: ok,
         checkDigit: check,
         expected: ok ? check : String(dammTally(payload)),
         detail: ok
           ? 'Damm: the quasigroup tally over the full value is zero'
-          : `Damm: the quasigroup tally over the full value is ${dammTally(value)}, not zero`,
+          : `Damm: the quasigroup tally over the full value is ${dammTally(flat)}, not zero`,
       }
     },
   },
@@ -492,6 +522,35 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
     11,
     (p) => weightedMod10Check(p, UPCA_WEIGHTS),
   ),
+  gtin14: numericScheme(
+    {
+      id: 'gtin14',
+      name: 'GTIN-14 / SSCC-18',
+      description: 'Fourteen-digit logistics identifier (trade-item case and pallet codes): same mod-10 weighting as EAN/UPC, 13-digit payload.',
+      length: '14',
+      payload: '13 digits',
+      check: '14th digit',
+      example: '09780306406157',
+    },
+    13,
+    (p) => weightedMod10Check(p, GTIN14_WEIGHTS),
+  ),
+  issn: numericScheme(
+    {
+      id: 'issn',
+      name: 'ISSN',
+      description: 'Eight-character serial-publication identifier (journals, magazines); the mod-11 check digit may be X.',
+      length: '8',
+      payload: '7 digits',
+      check: '8th character (0-9 or X)',
+      example: '03785955',
+    },
+    7,
+    issnCheck,
+    undefined,
+    /^\d{7}[\dX]$/i,
+    (v) => v.toUpperCase(),
+  ),
   isin: {
     meta: {
       id: 'isin',
@@ -508,7 +567,7 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
       return luhnCheck(expandLetters(normalized))
     },
     validate(value: string): CheckResult {
-      const normalized = value.toUpperCase()
+      const normalized = flatten(value).toUpperCase()
       if (!ISIN_RE.test(normalized)) {
         return { valid: false, checkDigit: '', expected: '', detail: 'isin value must be 2 letters + 9 alphanumerics + 1 digit' }
       }
@@ -541,7 +600,7 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
       return cusipCheck(normalized)
     },
     validate(value: string): CheckResult {
-      const normalized = value.toUpperCase()
+      const normalized = flatten(value).toUpperCase()
       if (!CUSIP_RE.test(normalized)) {
         return { valid: false, checkDigit: '', expected: '', detail: 'cusip value must be 8 base characters + 1 digit' }
       }
@@ -588,7 +647,7 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
       return casCheck(p)
     },
     validate(value: string): CheckResult {
-      const normalized = value.replace(/[\s-]/g, '')
+      const normalized = flatten(value)
       if (!DIGITS.test(normalized) || normalized.length < 3 || normalized.length > 10) {
         return { valid: false, checkDigit: '', expected: '', detail: 'cas value must be 3-10 digits (e.g. 7732-18-5)' }
       }
@@ -643,8 +702,14 @@ export function detectScheme(value: string): SchemeId | undefined {
   if (/^[A-Z]{2}\d{2}[A-Z0-9]{11,28}$/.test(normalized)) return 'iban'
   if (/^\d{13}$/.test(normalized)) return 'ean13'
   if (/^\d{12}$/.test(normalized)) return 'upca'
+  // ISSN values whose check character is X are unambiguous (EAN-8 is
+  // digits-only), so they are claimed before the EAN-8 shape; an all-digit
+  // ISSN stays ambiguous with EAN-8 and is left to it.
+  if (/^\d{7}X$/.test(normalized)) return 'issn'
   if (/^\d{8}$/.test(normalized)) return 'ean8'
   if (/^\d{9}[\dX]$/.test(normalized)) return 'isbn10'
+  // 14 digits stay luhn on purpose: GTIN-14 shares the length with 14-digit
+  // Luhn card numbers, so the scheme has to be named explicitly.
   if (/^\d{2,}$/.test(normalized)) return 'luhn'
   return undefined
 }

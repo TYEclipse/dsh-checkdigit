@@ -1,10 +1,11 @@
 /**
- * Tool definitions for dsh-checkdigit: four tools exposed to every agent via
+ * Tool definitions for dsh-checkdigit: five tools exposed to every agent via
  * defineTool with strict JSON-schema parameter surfaces and compact text
  * renderers.
  *
  *   checkdigit_generate — compute the check digit(s) for a payload
  *   checkdigit_validate — verify a full identifier (auto-detect the scheme)
+ *   checkdigit_repair   — find the single-character edits that make it valid
  *   checkdigit_info     — describe the supported schemes
  *   isbn_convert        — convert ISBN-10 <-> ISBN-13 (978 prefix only)
  *
@@ -15,6 +16,7 @@ import { formatIban, type IbanDetail } from './iban.ts';
 export interface ToolSet {
     checkdigit_generate: ToolDefinition;
     checkdigit_validate: ToolDefinition;
+    checkdigit_repair: ToolDefinition;
     checkdigit_info: ToolDefinition;
     isbn_convert: ToolDefinition;
 }

@@ -1,10 +1,11 @@
 /**
- * Tool definitions for dsh-checkdigit: four tools exposed to every agent via
+ * Tool definitions for dsh-checkdigit: five tools exposed to every agent via
  * defineTool with strict JSON-schema parameter surfaces and compact text
  * renderers.
  *
  *   checkdigit_generate — compute the check digit(s) for a payload
  *   checkdigit_validate — verify a full identifier (auto-detect the scheme)
+ *   checkdigit_repair   — find the single-character edits that make it valid
  *   checkdigit_info     — describe the supported schemes
  *   isbn_convert        — convert ISBN-10 <-> ISBN-13 (978 prefix only)
  *
@@ -13,12 +14,14 @@
 
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { SCHEMES, SCHEME_IDS, detectScheme, schemeMetaList, type SchemeId } from './core.ts'
+import { repairIdentifier, type RepairResult } from './repair.ts'
 import { convertIsbn, type IsbnConvertResult } from './isbn.ts'
 import { formatIban, ibanDetail, type IbanDetail } from './iban.ts'
 
 export interface ToolSet {
   checkdigit_generate: ToolDefinition
   checkdigit_validate: ToolDefinition
+  checkdigit_repair: ToolDefinition
   checkdigit_info: ToolDefinition
   isbn_convert: ToolDefinition
 }
@@ -89,6 +92,19 @@ function renderValidate(_args: { value: string }, value: unknown): string {
   return `${result.detail}`
 }
 
+function renderRepair(_args: { value: string; scheme?: string }, value: unknown): string {
+  const result = value as RepairResult
+  if (result.valid) return `valid ${result.scheme} — nothing to repair`
+  if (result.repairs.length === 0) return `no single-edit repair for ${result.scheme}: ${result.detail}`
+  const shown = result.repairs.slice(0, 3).map((repair) => {
+    if (repair.type === 'check-digit') return `fix check character → ${repair.value}`
+    if (repair.type === 'transpose') return `swap ${repair.from} at ${repair.position} → ${repair.value}`
+    return `position ${repair.position}: ${repair.from}→${repair.to} → ${repair.value}`
+  })
+  const more = result.total > shown.length ? ` (+${result.total - shown.length} more)` : ''
+  return `${result.scheme}: ${result.total} repair(s) — ${shown.join('; ')}${more}`
+}
+
 function renderInfo(_args: unknown, value: unknown): string {
   const result = value as InfoResult
   const lines = result.schemes.map((s) => `  ${s.id} — ${s.name}: ${s.description} (length ${s.length}, example ${s.example})`)
@@ -106,7 +122,7 @@ export function buildCheckdigitTools(): ToolSet {
   const checkdigit_generate = defineTool({
     name: 'checkdigit_generate',
     description: 'Compute the check digit for a payload under a named scheme (luhn, verhoeff, damm, isbn10, isbn13, '
-      + 'ean8, ean13, upca, isin, cusip, iban, cas, aba) and return the complete identifier. For iban the payload is the '
+      + 'ean8, ean13, upca, gtin14, issn, isin, cusip, iban, cas, aba) and return the complete identifier. For iban the payload is the '
       + '2-letter country code followed by the BBAN, and the result is the two mod-97 check digits. Pure local '
       + 'arithmetic — use it to build test card numbers, ISBNs, barcodes or account numbers with correct check digits.',
     parameters: {
@@ -152,7 +168,7 @@ export function buildCheckdigitTools(): ToolSet {
     name: 'checkdigit_validate',
     description: 'Verify the check digit of a full identifier. When scheme is omitted the scheme is auto-detected '
       + '(cas for hyphenated CAS Registry Numbers, isin, 9-digit ABA routing numbers, cusip, iban, ean13, upca, '
-      + 'ean8, isbn10, then luhn). Reports validity, the check digit found, the expected digit when wrong, and a '
+      + 'ean8, issn for X-terminated values, isbn10, then luhn). Reports validity, the check digit found, the expected digit when wrong, and a '
       + 'human-readable explanation. Pure local arithmetic.',
     parameters: {
       value: {
@@ -215,6 +231,62 @@ export function buildCheckdigitTools(): ToolSet {
         if (detail !== undefined) output.iban = detail
       }
       return output
+    },
+  })
+
+  const checkdigit_repair = defineTool({
+    name: 'checkdigit_repair',
+    description: 'When an identifier fails its check digit, enumerate the single-character edits that make it valid: a '
+      + 'corrected check character, a swapped adjacent pair, or one mistyped payload character. Every returned repair is '
+      + 'confirmed by the scheme validator, ordered most-likely-first (check character, then transpositions, then '
+      + 'substitutions), capped at 20 with the full count reported. Use it to answer "what was this number most likely '
+      + 'meant to be?" for a mistyped card number, ISBN, ISSN, barcode, IBAN or CAS Registry Number. Pure local arithmetic.',
+    parameters: {
+      value: {
+        type: 'string',
+        required: true,
+        description: 'The identifier that failed validation, e.g. "79927398714", "9780306406158", "7732-18-6". '
+          + 'Spaces, dashes and dots are ignored.',
+      },
+      scheme: {
+        type: 'string',
+        enum: [...SCHEME_IDS],
+        description: 'Optional scheme hint; omit to auto-detect.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          scheme: { type: 'string', required: true },
+          checkDigit: { type: 'string', required: true },
+          expected: { type: 'string', required: true },
+          total: { type: 'number', required: true },
+          truncated: { type: 'boolean', required: true },
+          repairs: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                type: { type: 'string', required: true, enum: ['check-digit', 'transpose', 'substitute'] },
+                position: { type: 'number', required: true },
+                from: { type: 'string', required: true },
+                to: { type: 'string', required: true },
+                value: { type: 'string', required: true },
+              },
+            },
+          },
+          detail: { type: 'string', required: true },
+        },
+      },
+      render: (_args: { value: string; scheme?: string }, value: unknown) => [{ type: 'text', text: renderRepair(_args, value) }],
+    },
+    async execute(args: { value: string; scheme?: SchemeId }): Promise<RepairResult> {
+      return repairIdentifier(args.value, args.scheme)
     },
   })
 
@@ -296,7 +368,7 @@ export function buildCheckdigitTools(): ToolSet {
     },
   })
 
-  return { checkdigit_generate, checkdigit_validate, checkdigit_info, isbn_convert }
+  return { checkdigit_generate, checkdigit_validate, checkdigit_repair, checkdigit_info, isbn_convert }
 }
 
 /** Re-export for consumers that need the formatter directly. */

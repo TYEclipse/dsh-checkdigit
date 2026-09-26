@@ -1,6 +1,9 @@
 /**
  * Tool-surface tests for dsh-checkdigit: schema discipline (R9), result
  * shapes and renderers.
+ *
+ * ORACLE: test/oracle/anchors.py
+ * (the scheme count and the repair anchors below are printed by that script)
  */
 
 import { describe, expect, it } from 'vitest'
@@ -102,10 +105,12 @@ describe('checkdigit_validate', () => {
 describe('checkdigit_info', () => {
   it('lists all schemes', async () => {
     const result = await tools.checkdigit_info.execute({})
-    expect(result.schemes.length).toBe(13)
+    expect(result.schemes.length).toBe(15)
     expect(result.schemes.map((s) => s.id)).toContain('iban')
     expect(result.schemes.map((s) => s.id)).toContain('cas')
     expect(result.schemes.map((s) => s.id)).toContain('aba')
+    expect(result.schemes.map((s) => s.id)).toContain('issn')
+    expect(result.schemes.map((s) => s.id)).toContain('gtin14')
   })
 
   it('filters to one scheme', async () => {

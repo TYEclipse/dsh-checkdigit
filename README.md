@@ -1,8 +1,8 @@
 # dsh-checkdigit
 
-Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate and detect check digits for **13 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, ISIN, CUSIP, IBAN, **CAS Registry Number** and **ABA routing number** — plus an **ISBN-10 ⇄ ISBN-13 converter**.
+Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate, repair and detect check digits for **15 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, GTIN-14, ISSN, ISIN, CUSIP, IBAN, **CAS Registry Number** and **ABA routing number** — plus an **ISBN-10 ⇄ ISBN-13 converter** and a **single-edit repair search** ("what was this number most likely meant to be?").
 
-> 校验位数学工具箱：生成 / 验证 / 识别 13 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、ISIN、CUSIP、IBAN、CAS 化学文摘号、ABA 美国银行路由号），另带 ISBN-10 与 ISBN-13 互转工具；零运行时依赖、纯本地算术。
+> 校验位数学工具箱：生成 / 验证 / 修复 / 识别 15 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、GTIN-14、ISSN、ISIN、CUSIP、IBAN、CAS 化学文摘号、ABA 美国银行路由号），另带 ISBN-10 与 ISBN-13 互转、以及「单字符修复」搜索工具；零运行时依赖、纯本地算术。
 
 ## Why
 
@@ -39,6 +39,8 @@ Supported `scheme` values and their payloads:
 | `ean8`    | 7 digits                            | 8th digit        | `96385074` |
 | `ean13`   | 12 digits                           | 13th digit       | `4006381333931` |
 | `upca`    | 11 digits                           | 12th digit       | `036000291452` |
+| `gtin14`  | 13 digits                           | 14th digit       | `09780306406157` |
+| `issn`    | 7 digits                            | 8th char (0-9 or X) | `03785955` |
 | `isin`    | 2 letters + 9 alphanumerics         | 12th char (digit)| `US0378331005` |
 | `cusip`   | 8 chars from `[A-Z0-9*@#]`          | 9th char (digit) | `037833100` |
 | `iban`    | 2-letter country + BBAN             | chars 3–4 (two digits) | `GB82WEST12345698765432` |
@@ -49,7 +51,7 @@ Use it to build test card numbers, ISBNs, barcodes, securities identifiers, rout
 
 ### `checkdigit_validate`
 
-Verify the check digit of a full identifier. The scheme is auto-detected when omitted (CAS hyphenated → ISIN → 9-digit ABA → CUSIP → IBAN → EAN-13 → UPC-A → EAN-8 → ISBN-10 → Luhn); pass `scheme` to force one.
+Verify the check digit of a full identifier. The scheme is auto-detected when omitted (CAS hyphenated → ISIN → 9-digit ABA → CUSIP → IBAN → EAN-13 → UPC-A → ISSN (X-terminated) → EAN-8 → ISBN-10 → Luhn); pass `scheme` to force one.
 
 ```text
 checkdigit_validate(value="GB82WEST12345698765432")
@@ -66,11 +68,28 @@ checkdigit_validate(value="79927398714")
   detail: "Luhn: check digit should be 3, but the value ends in 4"
 ```
 
-Spaces and dashes in the input are ignored. When a value is invalid, the result carries the **expected** check digit so callers can fix it programmatically.
+Spaces, dashes and dots in the input are ignored (the spaced card form `4111 1111 1111 1111`, the hyphenated `978-0-306-40615-7` and the printed `0378-5955` all validate). When a value is invalid, the result carries the **expected** check digit so callers can fix it programmatically.
+
+### `checkdigit_repair`
+
+When a value fails, enumerate the **single-character edits that make it valid** — a corrected check character, a swapped adjacent pair, or one mistyped payload character. Every repair is confirmed by the scheme's own validator and ordered most-likely-first.
+
+```text
+checkdigit_repair(value="79927398714")
+→ scheme: "luhn", total: 12, checkDigit: "4", expected: "3"
+  repairs[0]: { type: "check-digit", position: 11, from: "4", to: "3", value: "79927398713" }
+
+checkdigit_repair(value="GB82WEST12345698765431")
+→ scheme: "iban", total: 7
+  repairs[0]: { type: "check-digit", position: 3, to: "12", value: "GB12WEST12345698765431" }   # keep the account
+  repairs[6]: { type: "substitute", position: 22, from: "1", to: "2", value: "GB82WEST12345698765432" }  # keep the check digits
+```
+
+Both IBAN answers are legitimate — the caller can see whether the account digits or the check digits were more likely mistyped. `total` always reports the full count; the returned list is capped at 20 (`truncated: true`).
 
 ### `checkdigit_info`
 
-Describe the supported schemes: identifier lengths, payload formats, check-digit positions and worked examples. Call with a `scheme` for one scheme, or without arguments for all 13.
+Describe the supported schemes: identifier lengths, payload formats, check-digit positions and worked examples. Call with a `scheme` for one scheme, or without arguments for all 15.
 
 ### `isbn_convert`
 
@@ -99,6 +118,8 @@ ISBN-10 check digits may be `X` (value 10): `0-8044-2957-X` → `978-0-8044-2957
 | ISBN-10 | ISO 2108 | Mod-11; check digit may be `X` (= 10) |
 | ISBN-13 | ISO 2108 | EAN-13 arithmetic (Bookland) |
 | EAN-8 / EAN-13 | GS1 GTIN-8 / GTIN-13 | Retail barcodes |
+| GTIN-14 / SSCC-18 | GS1 GTIN-14 | Logistics case and pallet codes; same mod-10 weighting as EAN/UPC over a 13-digit payload |
+| ISSN | ISO 3297 | Serial publications; mod-11 check character may be `X` |
 | UPC-A | GS1 GTIN-12 | North American retail barcodes |
 | ISIN | ISO 6166 | Securities; letters expand A=10…Z=35, then Luhn |
 | CUSIP | ANSI X9.6 | North American securities; `* @ #` allowed; even positions doubled |
@@ -111,9 +132,12 @@ ISBN-10 check digits may be `X` (value 10): `0-8044-2957-X` → `978-0-8044-2957
 ```bash
 pnpm install
 pnpm build
-pnpm test   # 67 tests, anchors cross-checked against published worked examples
+pnpm test   # 91 tests
 pnpm lint
+python3 test/oracle/anchors.py   # independent anchors for every numeric assertion
 ```
+
+Test expectations are not hand-computed: `test/oracle/anchors.py` re-implements each scheme from its published specification in Python and prints every anchor the suites assert, including the repair counts and positions. Run it (or `pnpm test` on a fresh checkout) to regenerate them.
 
 ## License
 

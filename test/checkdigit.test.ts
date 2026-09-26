@@ -1,9 +1,12 @@
 /**
  * Scheme-level tests for dsh-checkdigit.
  *
- * Every anchor value below was fixed by an independent Python implementation
- * (an independent anchors script) cross-checked against published
- * worked examples, NOT by round-tripping through this implementation.
+ * ORACLE: test/oracle/anchors.py
+ *
+ * Every anchor value below is printed by that independently written Python
+ * script (committed with the repo, run it with
+ * `python3 test/oracle/anchors.py`), which implements the published
+ * specifications from scratch instead of round-tripping through this code.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -254,6 +257,33 @@ describe('aba', () => {
     expect(SCHEMES.aba.validate('091000018').valid).toBe(false)
     expect(SCHEMES.aba.validate('02100002').valid).toBe(false) // 8 digits, not 9
     expect(() => SCHEMES.aba.generate('0210000')).toThrow() // 7 payload digits
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Separator handling — the documented "spaces and dashes are ignored"
+// ---------------------------------------------------------------------------
+
+describe('separator handling', () => {
+  it('validates the spaced and hyphenated forms people write', () => {
+    expect(SCHEMES.luhn.validate('4111 1111 1111 1111').valid).toBe(true)
+    expect(SCHEMES.luhn.validate('7992-7398-713').valid).toBe(true)
+    expect(SCHEMES.isbn13.validate('978-0-306-40615-7').valid).toBe(true)
+    expect(SCHEMES.isbn10.validate('0-306-40615-2').valid).toBe(true)
+    expect(SCHEMES.issn.validate('0378-5955').valid).toBe(true)
+    expect(SCHEMES.gtin14.validate('0 9780306406157').valid).toBe(true)
+    expect(SCHEMES.verhoeff.validate('23 63').valid).toBe(true)
+    expect(SCHEMES.damm.validate('57-24').valid).toBe(true)
+    expect(SCHEMES.isin.validate('US 0378331005').valid).toBe(true)
+    expect(SCHEMES.cusip.validate('037-833-100').valid).toBe(true)
+    expect(SCHEMES.iban.validate('GB82 WEST 1234 5698 7654 32').valid).toBe(true)
+  })
+
+  it('still reports the digits it checked, not the raw input', () => {
+    const result = SCHEMES.luhn.validate('4111 1111 1111 1112')
+    expect(result.valid).toBe(false)
+    expect(result.checkDigit).toBe('2')
+    expect(result.expected).toBe('1')
   })
 })
 
