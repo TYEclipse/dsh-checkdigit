@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 import sys
 
 # --------------------------------------------------------------------------
@@ -190,6 +191,49 @@ def aba(payload: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# SEDOL — published alphabet (vowels are never issued) and weight vector
+# 1,3,1,7,3,9. The alphabet string is the LSE character table; the self-check
+# below re-derives the letter values from their ASCII codes, so a transcription
+# error in this table cannot pass unnoticed.
+# --------------------------------------------------------------------------
+
+SEDOL_ALPHABET = "0123456789 BCD FGH JKLMN PQRST VWXYZ"
+SEDOL_CHARS = set("0123456789BCDFGHJKLMNPQRSTVWXYZ")
+
+
+def sedol(payload: str) -> str:
+    weights = (1, 3, 1, 7, 3, 9)
+    total = sum(w * SEDOL_ALPHABET.index(ch) for w, ch in zip(weights, payload))
+    return str((10 - total) % 10)
+
+
+def sedol_valid(value: str) -> bool:
+    up = value.upper()
+    if len(up) != 7 or any(ch not in SEDOL_CHARS for ch in up):
+        return False
+    # New-style codes start with a letter; a digit-leading code is old-style and
+    # therefore all digits.
+    if up[0].isdigit() and not up.isdigit():
+        return False
+    return sedol(up[:-1]) == up[-1]
+
+
+# --------------------------------------------------------------------------
+# NPI — plain Luhn over the constant prefix 80840 + the 9-digit payload; the
+# first digit is the entity-type indicator (1 individual, 2 organisation).
+# --------------------------------------------------------------------------
+
+
+def npi(payload: str) -> str:
+    return luhn("80840" + payload)
+
+
+def npi_valid(value: str) -> bool:
+    return len(value) == 10 and value.isdigit() and value[0] in "12" and npi(value[:-1]) == value[-1]
+
+
+
+# --------------------------------------------------------------------------
 # Validators (the repair enumerator confirms candidates with these)
 # --------------------------------------------------------------------------
 
@@ -227,13 +271,17 @@ def valid(scheme: str, value: str) -> bool:
     if scheme == "aba":
         flat = digits_only(value)
         return len(flat) == 9 and flat.isdigit() and aba(flat[:-1]) == flat[-1]
+    if scheme == "sedol":
+        return sedol_valid(value)
+    if scheme == "npi":
+        return npi_valid(value)
     raise ValueError(f"unknown scheme {scheme}")
 
 
 REPAIR_LIMIT = 20
-ALPHANUMERIC = ("isin", "cusip", "iban")
+ALPHANUMERIC = ("isin", "cusip", "sedol", "iban")
 X_SCHEMES = ("isbn10", "issn")
-UPPERCASE = ("isin", "cusip", "iban", "isbn10", "issn")
+UPPERCASE = ("isin", "cusip", "sedol", "iban", "isbn10", "issn")
 
 
 def normalize(scheme: str, value: str) -> str:
@@ -261,6 +309,8 @@ def expected_check(scheme: str, value: str) -> str:
         "cusip": cusip,
         "cas": cas,
         "aba": aba,
+        "sedol": sedol,
+        "npi": npi,
     }[scheme](payload)
 
 
@@ -311,6 +361,94 @@ def repairs(scheme: str, value: str) -> tuple[int, list[tuple[str, int, str, str
 
 
 # --------------------------------------------------------------------------
+# Scheme detection + batch report — second-source mirror of the documented
+# contract of src/core.ts detectScheme() and the checkdigit_batch tool.
+# --------------------------------------------------------------------------
+
+CAS_RAW_RE = re.compile(r"^\d{2,7}-\d{2}-\d$")
+ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}\d$")
+CUSIP_RE = re.compile(r"^[A-Z0-9*@#]{8}\d$")
+SEDOL_RE = re.compile(r"^[BCDFGHJKLMNPQRSTVWXYZ][0-9BCDFGHJKLMNPQRSTVWXYZ]{5}\d$")
+IBAN_SHAPE_RE = re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{11,28}$")
+
+
+def detect(value: str) -> str | None:
+    """Mirror of the documented detection order (independent implementation)."""
+    if CAS_RAW_RE.match(value.strip()):
+        return "cas"
+    norm = re.sub(r"[\s-]", "", value).upper()
+    if ISIN_RE.match(norm):
+        return "isin"
+    if re.fullmatch(r"\d{9}", norm) and aba_valid(norm):
+        return "aba"
+    if CUSIP_RE.match(norm):
+        return "cusip"
+    if SEDOL_RE.match(norm):
+        return "sedol"
+    if IBAN_SHAPE_RE.match(norm):
+        return "iban"
+    if re.fullmatch(r"\d{13}", norm):
+        return "ean13"
+    if re.fullmatch(r"\d{12}", norm):
+        return "upca"
+    if re.fullmatch(r"\d{7}X", norm):
+        return "issn"
+    if re.fullmatch(r"\d{8}", norm):
+        return "ean8"
+    if re.fullmatch(r"\d{9}[\dX]", norm):
+        return "isbn10"
+    if re.fullmatch(r"\d{2,}", norm):
+        return "luhn"
+    return None
+
+
+def aba_valid(value: str) -> bool:
+    return len(value) == 9 and value.isdigit() and aba(value[:-1]) == value[-1]
+
+
+def batch_report(values: list[str], scheme: str | None = None) -> dict:
+    """Mirror of the documentated checkdigit_batch contract."""
+    rows = []
+    counts: dict[str, int] = {}
+    valid_count = 0
+    unknown_count = 0
+    for index, value in enumerate(values, start=1):
+        resolved = scheme if scheme is not None else detect(value)
+        if resolved is None:
+            unknown_count += 1
+            counts["unknown"] = counts.get("unknown", 0) + 1
+            rows.append((index, value, "unknown", False))
+            continue
+        ok = valid(resolved, digits_only(value).upper() if resolved in UPPERCASE else digits_only(value))
+        if ok:
+            valid_count += 1
+        counts[resolved] = counts.get(resolved, 0) + 1
+        rows.append((index, value, resolved, ok))
+    order = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {
+        "total": len(values),
+        "validCount": valid_count,
+        "invalidCount": len(values) - valid_count - unknown_count,
+        "unknownCount": unknown_count,
+        "byScheme": order,
+        "rows": rows,
+    }
+
+
+BATCH_VALUES = [
+    "79927398713",
+    "79927398714",
+    "B15KXQ8",
+    "B15KXQ7",
+    "978-0-306-40615-7",
+    "GB82WEST12345698765432",
+    "not-an-id",
+    "1234567893",
+]
+
+BATCH_NPI_VALUES = ["1234567893", "1245319599", "1234567890"]
+
+# --------------------------------------------------------------------------
 # Self-checks against published worked examples (fail loudly, never silently)
 # --------------------------------------------------------------------------
 
@@ -330,17 +468,43 @@ SELF_CHECKS: list[tuple[str, object, object]] = [
     ("cas(773218)", cas("773218"), "5"),
     ("iban_check_digits(GB, WEST12345698765432)", iban_check_digits("GB", "WEST12345698765432"), "82"),
     ("iban_check_digits(DE, 370400440532013000)", iban_check_digits("DE", "370400440532013000"), "89"),
+    ("iban_check_digits(FR, 20041010050500013M02606)", iban_check_digits("FR", "20041010050500013M02606"), "14"),
+    ("len(GB BBAN WEST12345698765432)", len("WEST12345698765432"), 18),
     ("iban_valid(GB82WEST12345698765432)", iban_valid("GB82WEST12345698765432"), True),
     ("iban_valid(GB82WEST12345698765431)", iban_valid("GB82WEST12345698765431"), False),
     ("valid(luhn, 79927398713)", valid("luhn", "79927398713"), True),
     ("valid(luhn, 79927398714)", valid("luhn", "79927398714"), False),
     ("valid(issn, 20493630)", valid("issn", "20493630"), True),
     ("valid(gtin14, 09780306406157)", valid("gtin14", "09780306406157"), True),
+    # SEDOL: published worked values for the LSE character table (digits keep
+    # their face value, letters count A=10 … Z=35) with weights 1,3,1,7,3,9.
+    ("sedol(B15KXQ)", sedol("B15KXQ"), "8"),
+    ("sedol(026349)", sedol("026349"), "4"),
+    ("sedol(B0YBKJ)", sedol("B0YBKJ"), "7"),
+    ("sedol(070995)", sedol("070995"), "4"),
+    ("sedol_valid on published codes", [sedol_valid(s) for s in ("B15KXQ8", "0263494", "B0YBKJ7", "0709954")], [True, True, True, True]),
+    ("sedol_valid(B15KXQ7) — published bad checksum", sedol_valid("B15KXQ7"), False),
+    ("sedol_valid(015KXQ8) — digit-leading mixed code", sedol_valid("015KXQ8"), False),
+    ("sedol alphabet: digits keep their face value", [SEDOL_ALPHABET.index(ch) for ch in "0123456789"], list(range(10))),
+    ("sedol alphabet: letters map to A=10 … Z=35", [SEDOL_ALPHABET.index(ch) for ch in "BCDFGHJKLMNPQRSTVWXYZ"], [ord(ch) - 55 for ch in "BCDFGHJKLMNPQRSTVWXYZ"]),
+    ("sedol alphabet: no vowels", [v in SEDOL_ALPHABET for v in "AEIOU"], [False, False, False, False, False]),
+    # NPI: published CMS/HHS example identifiers (Luhn over the constant 80840
+    # prefix + the nine-digit payload).
+    ("npi(123456789)", npi("123456789"), "3"),
+    ("npi(124531959)", npi("124531959"), "9"),
+    ("npi(199999998)", npi("199999998"), "4"),
+    ("npi(100300012)", npi("100300012"), "6"),
+    ("npi_valid on published codes", [npi_valid(s) for s in ("1234567893", "1245319599", "1999999984", "1003000126")], [True, True, True, True]),
+    # The same nine digits under plain Luhn want a different digit — this is
+    # exactly why ten-digit values are not auto-detected as NPI.
+    ("luhn(123456789) — plain Luhn disagrees with NPI", luhn("123456789"), "7"),
+    ("npi_valid(0234567893) — entity type 0", npi_valid("0234567893"), False),
+    ("npi_valid(3234567893) — entity type 3", npi_valid("3234567893"), False),
 ]
 
 SCHEME_IDS = [
     "luhn", "verhoeff", "damm", "isbn10", "isbn13", "ean8", "ean13", "upca",
-    "gtin14", "issn", "isin", "cusip", "iban", "cas", "aba",
+    "gtin14", "issn", "isin", "cusip", "sedol", "iban", "cas", "aba", "npi",
 ]
 
 # Fixtures shared with the test files: each one is repaired here first, so the
@@ -353,6 +517,10 @@ FIXTURES: list[tuple[str, str, str]] = [
     ("gtin14", "09780306406151", "wrong check digit"),
     ("iban", "GB82WEST12345698765431", "wrong mod-97 check digits"),
     ("damm", "123456789012345678901234567890", "30-character truncation fixture"),
+    ("sedol", "B15KXQ7", "wrong check digit (published example)"),
+    ("sedol", "B15KXQK", "check character mistyped as a letter"),
+    ("npi", "1234567894", "wrong check digit"),
+    ("npi", "1245319959", "swapped adjacent digits"),
 ]
 
 
@@ -373,6 +541,38 @@ def main(argv: list[str]) -> int:
     for sample in ("GB82WEST12345698765432", "DE89370400440532013000", "NO9386011117947"):
         flat = sample.upper().replace(" ", "")
         print(f"  {sample[:2]}: {len(flat)} (registry {IBAN_LENGTHS[sample[:2]]})")
+
+    print()
+    print("sedol anchors (payload -> check digit)")
+    for payload in ("B15KXQ", "026349", "B0YBKJ", "070995"):
+        print(f"  sedol({payload}) = {sedol(payload)}")
+    for value in ("B15KXQ8", "0263494", "B0YBKJ7", "0709954", "B15KXQ7", "015KXQ8"):
+        print(f"  sedol_valid({value}) = {sedol_valid(value)}")
+
+    print()
+    print("npi anchors (payload -> check digit)")
+    for payload in ("123456789", "124531959", "199999998", "100300012"):
+        print(f"  npi({payload}) = {npi(payload)}")
+    print(f"  expected check for 1234567894 = {npi('123456789')}, for 1245319959 = {npi('124531995')}")
+    print(f"  plain luhn(123456789) = {luhn('123456789')}  (NPI uses the 80840 prefix instead)")
+    print(f"  npi_valid(0234567893) = {npi_valid('0234567893')}")
+
+    print()
+    print("batch report anchors (checkdigit_batch, auto-detect)")
+    print("  contract limit: 50 values per call")
+    report = batch_report(BATCH_VALUES)
+    print(f"  total={report['total']} validCount={report['validCount']} invalidCount={report['invalidCount']} unknownCount={report['unknownCount']}")
+    print(f"  byScheme={report['byScheme']}")
+    for index, value, scheme, ok in report["rows"]:
+        print(f"  #{index} {value!r} -> {scheme} valid={ok}")
+
+    print()
+    print("batch report anchors (checkdigit_batch, scheme='npi')")
+    npi_report = batch_report(BATCH_NPI_VALUES, "npi")
+    print(f"  total={npi_report['total']} validCount={npi_report['validCount']} invalidCount={npi_report['invalidCount']} unknownCount={npi_report['unknownCount']}")
+    print(f"  byScheme={npi_report['byScheme']}")
+    for index, value, scheme, ok in npi_report["rows"]:
+        print(f"  #{index} {value!r} -> {scheme} valid={ok}")
 
     print()
     print("repair anchors (type, 1-based position, from, to)")

@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { buildCheckdigitTools } from '../src/tools.ts'
+import { assertLossless } from './helpers/lossless-json.ts'
 
 const tools = buildCheckdigitTools()
 
@@ -105,7 +106,7 @@ describe('checkdigit_validate', () => {
 describe('checkdigit_info', () => {
   it('lists all schemes', async () => {
     const result = await tools.checkdigit_info.execute({})
-    expect(result.schemes.length).toBe(15)
+    expect(result.schemes.length).toBe(17)
     expect(result.schemes.map((s) => s.id)).toContain('iban')
     expect(result.schemes.map((s) => s.id)).toContain('cas')
     expect(result.schemes.map((s) => s.id)).toContain('aba')
@@ -123,17 +124,6 @@ describe('checkdigit_info', () => {
 // ---------------------------------------------------------------------------
 // isbn_convert
 // ---------------------------------------------------------------------------
-
-/** Recursive guard: no key may hold undefined (lossless-JSON gate, R7/R18). */
-function assertNoUndefined(value: unknown, path: string): void {
-  if (value === null) return
-  if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      expect(child, `${path}.${key}`).not.toBeUndefined()
-      assertNoUndefined(child, `${path}.${key}`)
-    }
-  }
-}
 
 describe('isbn_convert', () => {
   it('converts ISBN-10 to ISBN-13 (978 prefix, recomputed check)', async () => {
@@ -155,7 +145,7 @@ describe('isbn_convert', () => {
       converted: '9780306406157',
       formatted: '978-0-306-40615-7',
     })
-    assertNoUndefined(result, 'isbn_convert')
+    assertLossless(result, 'isbn_convert')
   })
 
   it('converts ISBN-13 back to ISBN-10 (978 prefix only)', async () => {
@@ -167,7 +157,7 @@ describe('isbn_convert', () => {
       converted: '0306406152',
       formatted: '0-306-40615-2',
     })
-    assertNoUndefined(result, 'isbn_convert')
+    assertLossless(result, 'isbn_convert')
   })
 
   it('handles X check digits (080442957X -> 9780804429573)', async () => {
@@ -175,27 +165,27 @@ describe('isbn_convert', () => {
     expect(result.valid).toBe(true)
     expect(result.converted).toBe('9780804429573')
     expect(result.formatted).toBe('978-0-8044-2957-3')
-    assertNoUndefined(result, 'isbn_convert')
+    assertLossless(result, 'isbn_convert')
   })
 
   it('reports 979-prefixed ISBN-13 as having no ISBN-10 equivalent', async () => {
     const result = await tools.isbn_convert.execute({ isbn: '9791090636071' })
     expect(result.valid).toBe(false)
     if (!result.valid) expect(result.error).toContain('979')
-    assertNoUndefined(result, 'isbn_convert')
+    assertLossless(result, 'isbn_convert')
   })
 
   it('verifies the source check digit before converting', async () => {
     const result = await tools.isbn_convert.execute({ isbn: '0306406153' })
     expect(result.valid).toBe(false)
     if (!result.valid) expect(result.error).toContain('should be 2')
-    assertNoUndefined(result, 'isbn_convert')
+    assertLossless(result, 'isbn_convert')
   })
 
   it('rejects non-ISBN input gracefully', async () => {
     const result = await tools.isbn_convert.execute({ isbn: 'not-an-isbn' })
     expect(result.valid).toBe(false)
-    assertNoUndefined(result, 'isbn_convert')
+    assertLossless(result, 'isbn_convert')
   })
 })
 

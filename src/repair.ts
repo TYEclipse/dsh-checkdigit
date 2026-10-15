@@ -58,12 +58,12 @@ export interface RepairResult {
 }
 
 /** Characters an edit may introduce; letters only for the alphanumeric schemes. */
-const ALPHANUMERIC: readonly SchemeId[] = ['isin', 'cusip', 'iban']
+const ALPHANUMERIC: readonly SchemeId[] = ['isin', 'cusip', 'sedol', 'iban']
 /** Schemes whose check character may be the letter X. */
 const X_SCHEMES: readonly SchemeId[] = ['isbn10', 'issn']
 
 /** Drop separators (spaces, dashes, dots) and fold case for the letter schemes. */
-const UPPERCASE_SCHEMES: readonly SchemeId[] = ['isin', 'cusip', 'iban', 'isbn10', 'issn']
+const UPPERCASE_SCHEMES: readonly SchemeId[] = ['isin', 'cusip', 'sedol', 'iban', 'isbn10', 'issn']
 
 function normalize(scheme: SchemeId, value: string): string {
   const stripped = value.replace(/[\s.-]/g, '')

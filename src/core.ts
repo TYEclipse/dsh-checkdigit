@@ -25,9 +25,11 @@ export const SCHEME_IDS = [
   'issn',
   'isin',
   'cusip',
+  'sedol',
   'iban',
   'cas',
   'aba',
+  'npi',
 ] as const
 
 export type SchemeId = (typeof SCHEME_IDS)[number]
@@ -298,6 +300,57 @@ function abaCheck(payload: string): string {
 /** True when a full 9-digit value satisfies the ABA mod-10 weighted check. */
 function abaPasses(value: string): boolean {
   return abaCheck(value.slice(0, 8)) === value.slice(8)
+}
+
+// ---------------------------------------------------------------------------
+// SEDOL (Stock Exchange Daily Official List) — seven characters: a six-character
+// payload plus one check digit. Weights 1,3,1,7,3,9 from the left; digits keep
+// their face value and letters count as A=10 … Z=35. Vowels are never issued,
+// and a digit-leading code must be all digits (new-style codes start with a
+// letter) — so digit-only seven-character values stay Luhn on purpose and the
+// scheme has to be named for them.
+// ---------------------------------------------------------------------------
+
+const SEDOL_WEIGHTS = [1, 3, 1, 7, 3, 9] as const
+const SEDOL_PAYLOAD_RE = /^[0-9BCDFGHJKLMNPQRSTVWXYZ]{6}$/
+/** Seven characters, consonants/digits only, letter-leading (new style). */
+const SEDOL_RE = /^[BCDFGHJKLMNPQRSTVWXYZ][0-9BCDFGHJKLMNPQRSTVWXYZ]{5}\d$/
+
+/** SEDOL character value: digits as themselves, letters as A=10 … Z=35. */
+function sedolValue(char: string): number {
+  const code = char.charCodeAt(0)
+  return code >= 65 && code <= 90 ? code - 55 : code - 48
+}
+
+function sedolCheck(payload: string): string {
+  let sum = 0
+  for (let i = 0; i < payload.length; i++) {
+    sum += sedolValue(payload[i]!) * (SEDOL_WEIGHTS[i] ?? 0)
+  }
+  return String((10 - (sum % 10)) % 10)
+}
+
+/** True when a digit-leading code contains anything other than digits. */
+function sedolStyleViolation(value: string): boolean {
+  return /^\d/.test(value) && !DIGITS.test(value)
+}
+
+// ---------------------------------------------------------------------------
+// NPI (US National Provider Identifier) — ten digits: plain Luhn applied to the
+// constant prefix 80840 followed by the nine-digit payload. The first digit is
+// the entity-type indicator and is always 1 (individual) or 2 (organisation).
+// ---------------------------------------------------------------------------
+
+const NPI_RE = /^\d{10}$/
+
+function npiCheck(payload: string): string {
+  return luhnCheck(`80840${payload}`)
+}
+
+/** True when an NPI-shaped value carries a valid entity-type first digit. */
+function npiEntityType(value: string): boolean {
+  const first = value.slice(0, 1)
+  return first === '1' || first === '2'
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +670,43 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
       }
     },
   },
+  sedol: {
+    meta: {
+      id: 'sedol',
+      name: 'SEDOL (London Stock Exchange)',
+      description: 'Seven-character UK/Ireland security identifier: six alphanumerics (vowels are never issued) plus a check digit over the weights 1,3,1,7,3,9.',
+      length: '7',
+      payload: '6 characters from [0-9] and the consonants (new-style codes start with a letter)',
+      check: '7th character (digit)',
+      example: 'B15KXQ8',
+    },
+    generate(payload: string): string {
+      const normalized = payload.toUpperCase()
+      if (!SEDOL_PAYLOAD_RE.test(normalized)) throw new Error('sedol payload must be 6 characters from [0-9] and the consonants B-Z (vowels are never issued)')
+      if (sedolStyleViolation(normalized)) throw new Error('sedol: a digit-leading code must be all digits (new-style codes start with a letter)')
+      return sedolCheck(normalized)
+    },
+    validate(value: string): CheckResult {
+      const normalized = flatten(value).toUpperCase()
+      if (!/^[0-9BCDFGHJKLMNPQRSTVWXYZ]{7}$/.test(normalized)) {
+        return { valid: false, checkDigit: '', expected: '', detail: 'sedol value must be 7 characters from [0-9] and the consonants (vowels are never issued)' }
+      }
+      if (sedolStyleViolation(normalized)) {
+        return { valid: false, checkDigit: '', expected: '', detail: 'sedol: a digit-leading code must be all digits (new-style codes start with a letter)' }
+      }
+      const { payload, check } = splitLast(normalized)
+      const expected = sedolCheck(payload)
+      const ok = check === expected
+      return {
+        valid: ok,
+        checkDigit: check,
+        expected,
+        detail: ok
+          ? `SEDOL: weighted sum (1,3,1,7,3,9) matches check digit ${check}`
+          : `SEDOL: check digit should be ${expected}, but the value ends in ${check}`,
+      }
+    },
+  },
   iban: {
     meta: {
       id: 'iban',
@@ -680,6 +770,42 @@ export const SCHEMES: Record<SchemeId, SchemeSpec> = {
     /^\d+$/,
     (v) => v.replace(/[\s-]/g, ''),
   ),
+  npi: {
+    meta: {
+      id: 'npi',
+      name: 'NPI (US National Provider Identifier)',
+      description: 'Ten-digit US healthcare provider identifier: plain Luhn over the constant prefix 80840 plus the nine-digit payload. NPIs start with 1 or 2 (the entity-type indicator), which is why ten-digit values are not auto-detected.',
+      length: '10',
+      payload: '9 digits (the identifier begins with 1 or 2)',
+      check: '10th digit',
+      example: '1234567893',
+    },
+    generate(payload: string): string {
+      if (!DIGITS.test(payload)) throw new Error('npi payload must be digits only')
+      if (payload.length !== 9) throw new Error(`npi payload must be exactly 9 digits, got ${payload.length}`)
+      return npiCheck(payload)
+    },
+    validate(value: string): CheckResult {
+      const normalized = flatten(value)
+      if (!NPI_RE.test(normalized)) {
+        return { valid: false, checkDigit: '', expected: '', detail: `npi value must be exactly 10 digits, got ${normalized.length}` }
+      }
+      if (!npiEntityType(normalized)) {
+        return { valid: false, checkDigit: '', expected: '', detail: 'npi values always begin with 1 (individual) or 2 (organisation)' }
+      }
+      const { payload, check } = splitLast(normalized)
+      const expected = npiCheck(payload)
+      const ok = check === expected
+      return {
+        valid: ok,
+        checkDigit: check,
+        expected,
+        detail: ok
+          ? `NPI: Luhn over the 80840 prefix matches check digit ${check}`
+          : `NPI: check digit should be ${expected}, but the value ends in ${check}`,
+      }
+    },
+  },
 }
 
 /**
@@ -698,6 +824,10 @@ export function detectScheme(value: string): SchemeId | undefined {
   // numbers; the rest stay CUSIP-shaped (CUSIP payloads are usually letters).
   if (/^\d{9}$/.test(normalized) && abaPasses(normalized)) return 'aba'
   if (CUSIP_RE.test(normalized)) return 'cusip'
+  // SEDOL: seven characters, vowels never issued. Only letter-leading codes are
+  // claimed — a digit-only seven-character value is indistinguishable from a
+  // seven-digit Luhn number, so that case has to name the scheme explicitly.
+  if (SEDOL_RE.test(normalized)) return 'sedol'
   // IBAN: 2 letters + 2 check digits + BBAN of 11..28 -> total length 15..32.
   if (/^[A-Z]{2}\d{2}[A-Z0-9]{11,28}$/.test(normalized)) return 'iban'
   if (/^\d{13}$/.test(normalized)) return 'ean13'

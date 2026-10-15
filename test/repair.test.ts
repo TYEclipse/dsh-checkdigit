@@ -12,17 +12,9 @@
 import { describe, expect, it } from 'vitest'
 import { repairIdentifier, REPAIR_LIMIT } from '../src/repair.ts'
 import { buildCheckdigitTools } from '../src/tools.ts'
+import { assertLossless } from './helpers/lossless-json.ts'
 
-/** Recursive guard: no key may hold undefined (lossless-JSON gate, R7/R18). */
-function assertNoUndefined(value: unknown, path: string): void {
-  if (value === null) return
-  if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      expect(child, `${path}.${key}`).not.toBeUndefined()
-      assertNoUndefined(child, `${path}.${key}`)
-    }
-  }
-}
+
 
 describe('repairIdentifier', () => {
   it('reports nothing to repair for a valid identifier', () => {
@@ -164,7 +156,7 @@ describe('checkdigit_repair tool', () => {
     const result = await tools.checkdigit_repair.execute({ value: '79927398714' })
     expect(result.scheme).toBe('luhn')
     expect(result.total).toBe(12)
-    assertNoUndefined(result, 'repair')
+    assertLossless(result, 'repair')
   })
 
   it('renders the most likely repair', () => {

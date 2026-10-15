@@ -1,6 +1,11 @@
 /**
- * IBAN tests for dsh-checkdigit. Anchors fixed by the independent Python
- * script against published worked examples.
+ * IBAN tests for dsh-checkdigit.
+ *
+ * ORACLE: test/oracle/anchors.py
+ *
+ * Anchors fixed by that independently written Python script against published
+ * worked examples (GB 82, DE 89, FR 14, and the BBAN length 18 for the GB
+ * sample are all printed by `python3 test/oracle/anchors.py`).
  */
 
 import { describe, expect, it } from 'vitest'

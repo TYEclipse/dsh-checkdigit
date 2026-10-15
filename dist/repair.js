@@ -21,11 +21,11 @@ import { SCHEMES, detectScheme } from "./core.js";
 /** Maximum number of repairs returned (the count is always reported in full). */
 export const REPAIR_LIMIT = 20;
 /** Characters an edit may introduce; letters only for the alphanumeric schemes. */
-const ALPHANUMERIC = ['isin', 'cusip', 'iban'];
+const ALPHANUMERIC = ['isin', 'cusip', 'sedol', 'iban'];
 /** Schemes whose check character may be the letter X. */
 const X_SCHEMES = ['isbn10', 'issn'];
 /** Drop separators (spaces, dashes, dots) and fold case for the letter schemes. */
-const UPPERCASE_SCHEMES = ['isin', 'cusip', 'iban', 'isbn10', 'issn'];
+const UPPERCASE_SCHEMES = ['isin', 'cusip', 'sedol', 'iban', 'isbn10', 'issn'];
 function normalize(scheme, value) {
     const stripped = value.replace(/[\s.-]/g, '');
     return UPPERCASE_SCHEMES.includes(scheme) ? stripped.toUpperCase() : stripped;
