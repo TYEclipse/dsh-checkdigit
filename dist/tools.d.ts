@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-checkdigit: six tools exposed to every agent via
+ * Tool definitions for dsh-checkdigit: seven tools exposed to every agent via
  * defineTool with strict JSON-schema parameter surfaces and compact text
  * renderers.
  *
@@ -7,6 +7,7 @@
  *   checkdigit_validate — verify a full identifier (auto-detect the scheme)
  *   checkdigit_repair   — find the single-character edits that make it valid
  *   checkdigit_batch    — validate a whole column of identifiers at once
+ *   checkdigit_scan     — find identifiers inside free text
  *   checkdigit_info     — describe the supported schemes
  *   isbn_convert        — convert ISBN-10 <-> ISBN-13 (978 prefix only)
  *
@@ -19,6 +20,7 @@ export interface ToolSet {
     checkdigit_validate: ToolDefinition;
     checkdigit_repair: ToolDefinition;
     checkdigit_batch: ToolDefinition;
+    checkdigit_scan: ToolDefinition;
     checkdigit_info: ToolDefinition;
     isbn_convert: ToolDefinition;
 }

@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-checkdigit: six tools exposed to every agent via
+ * Tool definitions for dsh-checkdigit: seven tools exposed to every agent via
  * defineTool with strict JSON-schema parameter surfaces and compact text
  * renderers.
  *
@@ -7,6 +7,7 @@
  *   checkdigit_validate — verify a full identifier (auto-detect the scheme)
  *   checkdigit_repair   — find the single-character edits that make it valid
  *   checkdigit_batch    — validate a whole column of identifiers at once
+ *   checkdigit_scan     — find identifiers inside free text
  *   checkdigit_info     — describe the supported schemes
  *   isbn_convert        — convert ISBN-10 <-> ISBN-13 (978 prefix only)
  *
@@ -15,13 +16,14 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { SCHEMES, SCHEME_IDS, detectScheme, schemeMetaList } from "./core.js";
 import { repairIdentifier } from "./repair.js";
+import { scanText, SCAN_LIMIT, SCAN_TEXT_LIMIT } from "./scan.js";
 import { convertIsbn } from "./isbn.js";
 import { formatIban, ibanDetail } from "./iban.js";
 /** Maximum number of identifiers accepted by one batch call. */
 export const BATCH_LIMIT = 50;
 /** Assemble the full identifier for a generated check digit. */
 function assembleComplete(scheme, payload, checkDigit) {
-    const normalized = scheme === 'isin' || scheme === 'cusip' || scheme === 'iban'
+    const normalized = scheme === 'isin' || scheme === 'cusip' || scheme === 'iban' || scheme === 'lei'
         ? payload.toUpperCase().replace(/[\s-]/g, '')
         : payload;
     if (scheme === 'iban') {
@@ -63,6 +65,20 @@ function renderRepair(_args, value) {
     const more = result.total > shown.length ? ` (+${result.total - shown.length} more)` : '';
     return `${result.scheme}: ${result.total} repair(s) — ${shown.join('; ')}${more}`;
 }
+function renderScan(_args, value) {
+    const result = value;
+    if (result.error !== undefined)
+        return `checkdigit_scan: ${result.error}`;
+    const head = result.total === 0
+        ? `checkdigit_scan: no check-digit identifier found in ${result.scanned} candidate string(s)`
+        : `checkdigit_scan: ${result.validCount} valid, ${result.invalidCount} failing of ${result.scanned} candidate string(s)`;
+    const shown = result.matches.slice(0, 4).map((match) => {
+        const state = match.valid ? match.scheme : `${match.scheme}, expected ${match.expected}`;
+        return `${match.value} (${state})`;
+    });
+    const more = result.total > shown.length ? ` (+${result.total - shown.length} more)` : '';
+    return shown.length === 0 ? head : `${head} — ${shown.join('; ')}${more}`;
+}
 function renderBatch(_args, value) {
     const result = value;
     if (result.error !== undefined)
@@ -91,8 +107,7 @@ function renderIsbnConvert(_args, value) {
 export function buildCheckdigitTools() {
     const checkdigit_generate = defineTool({
         name: 'checkdigit_generate',
-        description: 'Compute the check digit for a payload under a named scheme (luhn, verhoeff, damm, isbn10, isbn13, '
-            + 'ean8, ean13, upca, gtin14, issn, isin, cusip, iban, cas, aba) and return the complete identifier. For iban the payload is the '
+        description: `Compute the check digit for a payload under a named scheme (${SCHEME_IDS.join(', ')}) and return the complete identifier. For iban the payload is the `
             + '2-letter country code followed by the BBAN, and the result is the two mod-97 check digits. Pure local '
             + 'arithmetic — use it to build test card numbers, ISBNs, barcodes or account numbers with correct check digits.',
         parameters: {
@@ -137,8 +152,9 @@ export function buildCheckdigitTools() {
     const checkdigit_validate = defineTool({
         name: 'checkdigit_validate',
         description: 'Verify the check digit of a full identifier. When scheme is omitted the scheme is auto-detected '
-            + '(cas for hyphenated CAS Registry Numbers, isin, 9-digit ABA routing numbers, cusip, iban, ean13, upca, '
-            + 'ean8, issn for X-terminated values, isbn10, then luhn). Reports validity, the check digit found, the expected digit when wrong, and a '
+            + '(cas for hyphenated CAS Registry Numbers, isin, 9-digit ABA routing numbers, cusip, iban, lei when the mod-97 '
+            + 'remainder confirms it, orcid inside the 0000-000x block, ean13, upca, ean8, issn for X-terminated values, '
+            + 'isbn10, then luhn). Reports validity, the check digit found, the expected digit when wrong, and a '
             + 'human-readable explanation. Pure local arithmetic.',
         parameters: {
             value: {
@@ -380,6 +396,72 @@ export function buildCheckdigitTools() {
             };
         },
     });
+    const checkdigit_scan = defineTool({
+        name: 'checkdigit_scan',
+        description: 'Find identifiers inside free text (a receipt, an email, a pasted page) instead of a one-per-line '
+            + 'column: every whitespace-separated string is tried against the known formats, and adjacent groups are '
+            + 'merged only when the merged value passes its own check digit — which is how "GB82 WEST 1234 5698 7654 32" '
+            + 'or "978 0 306 40615 7" is recognised while ordinary prose is not. Returns each hit with its character '
+            + 'offsets so the caller can slice it back out of the text, plus the valid / failing counts. '
+            + 'Auto-detection reports Luhn only for 12–19 digit runs; name `schemes` to search for one scheme regardless '
+            + 'of shape (e.g. ["npi"] or ["gtin14"]). Pure local arithmetic — the text never leaves the machine.',
+        parameters: {
+            text: {
+                type: 'string',
+                required: true,
+                description: `The text to read (up to ${SCAN_TEXT_LIMIT} characters).`,
+            },
+            schemes: {
+                type: 'array',
+                items: { type: 'string', enum: [...SCHEME_IDS] },
+                description: 'Optional list of schemes to look for; omit to auto-detect each candidate.',
+            },
+            includeInvalid: {
+                type: 'boolean',
+                description: 'Also report single strings whose format matches a scheme but whose check digit fails '
+                    + '(a typo hint). Merged groups are only reported when they validate.',
+            },
+            limit: {
+                type: 'number',
+                description: `Maximum matches to return (1–${SCAN_LIMIT}, default 20); the total count is always reported.`,
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    scanned: { type: 'number', required: true },
+                    total: { type: 'number', required: true },
+                    validCount: { type: 'number', required: true },
+                    invalidCount: { type: 'number', required: true },
+                    truncated: { type: 'boolean', required: true },
+                    matches: {
+                        type: 'array',
+                        required: true,
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                value: { type: 'string', required: true },
+                                scheme: { type: 'string', required: true },
+                                valid: { type: 'boolean', required: true },
+                                start: { type: 'number', required: true },
+                                end: { type: 'number', required: true },
+                                checkDigit: { type: 'string', required: true },
+                                expected: { type: 'string', required: true },
+                            },
+                        },
+                    },
+                    error: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderScan(_args, value) }],
+        },
+        async execute(args) {
+            return scanText(args.text, { schemes: args.schemes, includeInvalid: args.includeInvalid, limit: args.limit });
+        },
+    });
     const checkdigit_info = defineTool({
         name: 'checkdigit_info',
         description: 'Describe the supported check-digit schemes: identifier lengths, payload formats, check-digit '
@@ -456,7 +538,7 @@ export function buildCheckdigitTools() {
             return convertIsbn(args.isbn);
         },
     });
-    return { checkdigit_generate, checkdigit_validate, checkdigit_repair, checkdigit_batch, checkdigit_info, isbn_convert };
+    return { checkdigit_generate, checkdigit_validate, checkdigit_repair, checkdigit_batch, checkdigit_scan, checkdigit_info, isbn_convert };
 }
 /** Re-export for consumers that need the formatter directly. */
 export { formatIban };

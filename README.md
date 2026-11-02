@@ -1,8 +1,8 @@
 # dsh-checkdigit
 
-Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate, repair and detect check digits for **17 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, GTIN-14, ISSN, ISIN, CUSIP, **SEDOL**, IBAN, **CAS Registry Number**, **ABA routing number** and **NPI** — plus an **ISBN-10 ⇄ ISBN-13 converter**, a **single-edit repair search** ("what was this number most likely meant to be?") and a **batch validator** for whole columns of identifiers.
+Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate, repair and detect check digits for **19 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, GTIN-14, ISSN, ISIN, CUSIP, **SEDOL**, IBAN, **CAS Registry Number**, **ABA routing number**, **NPI**, **LEI** and **ORCID iD** — plus an **ISBN-10 ⇄ ISBN-13 converter**, a **single-edit repair search** ("what was this number most likely meant to be?"), a **batch validator** for whole columns of identifiers and a **free-text scanner** that finds identifiers inside prose.
 
-> 校验位数学工具箱：生成 / 验证 / 修复 / 识别 17 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、GTIN-14、ISSN、ISIN、CUSIP、SEDOL、IBAN、CAS 化学文摘号、ABA 美国银行路由号、NPI 美国医疗提供者号），另带 ISBN-10 与 ISBN-13 互转、「单字符修复」搜索工具、以及批量校验工具；零运行时依赖、纯本地算术。
+> 校验位数学工具箱：生成 / 验证 / 修复 / 识别 19 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、GTIN-14、ISSN、ISIN、CUSIP、SEDOL、IBAN、CAS 化学文摘号、ABA 美国银行路由号、NPI 美国医疗提供者号、LEI 法人识别码、ORCID 学者号），另带 ISBN-10 与 ISBN-13 互转、「单字符修复」搜索工具、批量校验工具与**自由文本扫描**工具；零运行时依赖、纯本地算术。
 
 ## Why
 
@@ -48,12 +48,14 @@ Supported `scheme` values and their payloads:
 | `cas`     | 2–9 digits (hyphens ignored)        | last digit       | `7732-18-5` |
 | `aba`     | 8 digits                            | 9th digit        | `021000021` |
 | `npi`     | 9 digits                            | 10th digit       | `1234567893` |
+| `lei`     | 18 chars (letters/digits, `00` at 5–6) | last two characters (mod 97) | `529900T8BM49AURSDO55` |
+| `orcid`   | 15 digits                           | 16th character (0-9 or `X`) | `0000000218250097` |
 
 Use it to build test card numbers, ISBNs, barcodes, securities identifiers, routing numbers or account numbers whose check digits actually verify.
 
 ### `checkdigit_validate`
 
-Verify the check digit of a full identifier. The scheme is auto-detected when omitted (CAS hyphenated → ISIN → 9-digit ABA → CUSIP → SEDOL (letter-leading) → IBAN → EAN-13 → UPC-A → ISSN (X-terminated) → EAN-8 → ISBN-10 → Luhn); pass `scheme` to force one. SEDOLs that are all digits and every NPI share their length with Luhn/ISBN-10 values, so those two have to be named.
+Verify the check digit of a full identifier. The scheme is auto-detected when omitted (CAS hyphenated → ISIN → 9-digit ABA → CUSIP → SEDOL (letter-leading) → IBAN → LEI (only when the mod-97 remainder confirms it) → ORCID inside the `0000-000x` block → EAN-13 → UPC-A → ISSN (X-terminated) → EAN-8 → ISBN-10 → Luhn); pass `scheme` to force one. SEDOLs that are all digits and every NPI share their length with Luhn/ISBN-10 values, so those two have to be named — and so does a sixteen-digit value outside the ORCID block, which stays a card number.
 
 ```text
 checkdigit_validate(value="GB82WEST12345698765432")
@@ -106,9 +108,25 @@ checkdigit_batch(values=["1234567893","1245319599","1234567890"], scheme="npi")
 
 Use it for pasted lists and spreadsheet columns instead of one validation call per row. An empty list or more than 50 values is rejected with an `error` and no rows — the list is never truncated silently.
 
+### `checkdigit_scan`
+
+Find identifiers inside free text — a receipt, an email, a pasted page — instead of a one-per-line column. Every whitespace-separated string is tried against the known formats, and adjacent groups are merged **only when the merged value passes its own check digit**, which is how `GB82 WEST 1234 5698 7654 32` and `978 0 306 40615 7` are recognised while ordinary prose is not. Each hit comes back with the character offsets needed to slice it out of the text.
+
+```text
+checkdigit_scan(text="Invoice 2026-11: card 4111 1111 1111 1111 charged, ISBN 978 0 306 40615 7, "
+                     "LEI 529900T8BM49AURSDO55, ORCID 0000-0002-1825-0097, "
+                     "IBAN GB82 WEST 1234 5698 7654 32, SEDOL B15KXQ8.")
+→ scanned: 22, total: 6, validCount: 6
+  matches[0]: { scheme: "luhn",  value: "4111 1111 1111 1111", start: 22, end: 41 }
+  matches[1]: { scheme: "ean13", value: "978 0 306 40615 7",   start: 56, end: 73 }
+  matches[4]: { scheme: "iban",  value: "GB82 WEST 1234 5698 7654 32", start: 133, end: 160 }
+```
+
+Two rules keep the output honest: a merge may only start from a token that carries a digit (so a word is never glued onto the front of a number), and the longest grouping is tried first so the complete identifier wins over a prefix that happens to pass by chance. Auto-detection reports Luhn only for 12–19 digit runs, so years and house numbers are not "card numbers"; name `schemes` to look for one scheme regardless of shape. `includeInvalid: true` also reports single strings whose format matched but whose check digit failed — a typo hint, with the character it should have been.
+
 ### `checkdigit_info`
 
-Describe the supported schemes: identifier lengths, payload formats, check-digit positions and worked examples. Call with a `scheme` for one scheme, or without arguments for all 17.
+Describe the supported schemes: identifier lengths, payload formats, check-digit positions and worked examples. Call with a `scheme` for one scheme, or without arguments for all 19.
 
 ### `isbn_convert`
 
@@ -147,6 +165,8 @@ ISBN-10 check digits may be `X` (value 10): `0-8044-2957-X` → `978-0-8044-2957
 | CAS Registry Number | CAS | Chemical substances; digit × position-from-right sum mod 10 |
 | ABA routing number | US Federal Reserve | Bank routing transit numbers; 3-7-1 weighted sum mod 10 |
 | NPI | CMS / US HHS | US healthcare provider identifiers; plain Luhn over the constant `80840` prefix, first digit 1 or 2 |
+| LEI | ISO 17442 | Legal Entity Identifiers (GLEIF); 20 chars, `00` reserved at positions 5–6, two mod-97 check digits at the end |
+| ORCID iD | ISO/IEC 7064 MOD 11-2 | Researcher identifiers; 15 digits plus a check character that may be `X` |
 
 ## Development
 

@@ -28,6 +28,8 @@ export const SCHEME_IDS = [
     'cas',
     'aba',
     'npi',
+    'lei',
+    'orcid',
 ];
 const DIGITS = /^\d+$/;
 /** Strip the separators people actually type: spaces, dashes and dots. */
@@ -287,6 +289,57 @@ function npiCheck(payload) {
 function npiEntityType(value) {
     const first = value.slice(0, 1);
     return first === '1' || first === '2';
+}
+// ---------------------------------------------------------------------------
+// LEI (ISO 17442) — twenty characters: a four-character LOU prefix, two
+// reserved characters (currently always "00"), a twelve-character entity
+// identifier and the two check digits at the END.
+//
+// The arithmetic is ISO/IEC 7064 MOD 97-10 over the letters expanded
+// A=10 … Z=35 — the same expansion IBAN uses — but nothing is rotated: the
+// whole value simply has to leave a remainder of 1, and generation puts the
+// two digits that make that true at the end (`98 - (payload + "00") mod 97`).
+// Verified against LEIs issued by GLEIF (see test/oracle/anchors.py).
+// ---------------------------------------------------------------------------
+const LEI_RE = /^[A-Z0-9]{18}\d{2}$/;
+/** Positions 5–6 are reserved and carry "00" in every issued LEI. */
+const LEI_RESERVED = '00';
+/** mod-97 of a (possibly very long) digit string, computed in chunks. */
+function mod97(digits) {
+    let remainder = 0;
+    for (let i = 0; i < digits.length; i += 9) {
+        remainder = Number(`${remainder}${digits.slice(i, i + 9)}`) % 97;
+    }
+    return remainder;
+}
+function leiCheckDigits(payload) {
+    return String(98 - mod97(expandLetters(`${payload}00`))).padStart(2, '0');
+}
+/** True when the full twenty-character value leaves remainder 1 (mod 97). */
+function leiPasses(value) {
+    return mod97(expandLetters(value)) === 1;
+}
+// ---------------------------------------------------------------------------
+// ORCID iD — sixteen characters: fifteen digits plus a check character
+// computed with ISO/IEC 7064 MOD 11-2. The published formula multiplies digit
+// i (1-based) by 2^(16−i), takes the total mod 11 and maps 1 - remainder to the
+// check character, where 10 becomes X. A remainder of 0 therefore yields the
+// digit 1 (the "12 − remainder = 12" corner of the ORCID write-up).
+// ---------------------------------------------------------------------------
+const ORCID_RE = /^\d{15}[\dX]$/;
+/**
+ * What auto-detection claims: every ORCID iD issued so far sits in the
+ * 0000-000x block, so a sixteen-digit card number is left to Luhn instead of
+ * being relabelled as an ORCID.
+ */
+const ORCID_DETECT_RE = /^0000\d{11}[\dX]$/;
+function orcidCheck(payload) {
+    let total = 0;
+    for (let i = 0; i < 15; i++) {
+        total += (payload.charCodeAt(i) - 48) * 2 ** (15 - i);
+    }
+    const result = (((1 - total) % 11) + 11) % 11;
+    return result === 10 ? 'X' : String(result);
 }
 // ---------------------------------------------------------------------------
 // ISBN-10 <-> ISBN-13 conversion helpers (used by the isbn_convert tool).
@@ -692,7 +745,90 @@ export const SCHEMES = {
             };
         },
     },
+    lei: {
+        meta: {
+            id: 'lei',
+            name: 'LEI (ISO 17442)',
+            description: 'Twenty-character Legal Entity Identifier issued by GLEIF: four-character LOU prefix, two reserved characters, twelve-character entity id and two mod-97 check digits at the end.',
+            length: '20',
+            payload: '18 characters (letters and digits; positions 5–6 are the reserved "00")',
+            check: 'last two characters (mod 97, letters expanded A=10 … Z=35)',
+            example: '529900T8BM49AURSDO55',
+        },
+        generate(payload) {
+            const normalized = payload.toUpperCase().replace(/[\s.-]/g, '');
+            if (!/^[A-Z0-9]{18}$/.test(normalized)) {
+                throw new Error('lei payload must be exactly 18 letters/digits (the full LEI without its last two check digits)');
+            }
+            if (normalized.slice(4, 6) !== LEI_RESERVED) {
+                throw new Error('lei: characters 5–6 are reserved and must be "00"');
+            }
+            const check = leiCheckDigits(normalized);
+            if (!leiPasses(normalized + check))
+                throw new Error('internal error: generated LEI check digits failed the mod-97 self-check');
+            return check;
+        },
+        validate(value) {
+            const normalized = flatten(value).toUpperCase();
+            if (!LEI_RE.test(normalized)) {
+                return { valid: false, checkDigit: '', expected: '', detail: `lei value must be 20 letters/digits (letters expanded A=10 … Z=35), got ${normalized.length} characters` };
+            }
+            const check = normalized.slice(-2);
+            if (normalized.slice(4, 6) !== LEI_RESERVED) {
+                return { valid: false, checkDigit: check, expected: '', detail: 'lei: characters 5–6 are reserved and must be "00"' };
+            }
+            const ok = leiPasses(normalized);
+            const expected = ok ? check : leiCheckDigits(normalized.slice(0, -2));
+            return {
+                valid: ok,
+                checkDigit: check,
+                expected,
+                detail: ok
+                    ? `LEI: mod-97 check passed (remainder 1), check digits ${check}`
+                    : `LEI: mod-97 remainder is not 1 — check digits should be ${expected}, but the value ends in ${check}`,
+            };
+        },
+    },
+    orcid: {
+        meta: {
+            id: 'orcid',
+            name: 'ORCID iD (ISO 7064 MOD 11-2)',
+            description: 'Sixteen-character researcher identifier: fifteen digits plus a check character computed with MOD 11-2, which may be the letter X.',
+            length: '16',
+            payload: '15 digits',
+            check: '16th character (0-9 or X)',
+            example: '0000000218250097',
+        },
+        generate(payload) {
+            if (!DIGITS.test(payload))
+                throw new Error('orcid payload must be digits only');
+            if (payload.length !== 15)
+                throw new Error(`orcid payload must be exactly 15 digits, got ${payload.length}`);
+            return orcidCheck(payload);
+        },
+        validate(value) {
+            const normalized = flatten(value).toUpperCase();
+            if (!ORCID_RE.test(normalized)) {
+                return { valid: false, checkDigit: '', expected: '', detail: `orcid value must be 15 digits plus a check character (0-9 or X), got ${normalized.length} characters` };
+            }
+            const { payload, check } = splitLast(normalized);
+            const expected = orcidCheck(payload);
+            const ok = check === expected;
+            return {
+                valid: ok,
+                checkDigit: check,
+                expected,
+                detail: ok
+                    ? `ORCID: MOD 11-2 check character ${check} matches the 2^n weighted total`
+                    : `ORCID: check character should be ${expected}, but the value ends in ${check}`,
+            };
+        },
+    },
 };
+/** True when the value has LEI shape (twenty letters/digits) — checksum not checked. */
+export function leiShaped(value) {
+    return LEI_RE.test(flatten(value).toUpperCase());
+}
 /**
  * Detect the most likely scheme for a value. Ordering matters: stricter
  * formats (ISIN, CUSIP, ISBN-10) are tested before the loose digit fallbacks.
@@ -721,6 +857,16 @@ export function detectScheme(value) {
     // IBAN: 2 letters + 2 check digits + BBAN of 11..28 -> total length 15..32.
     if (/^[A-Z]{2}\d{2}[A-Z0-9]{11,28}$/.test(normalized))
         return 'iban';
+    // LEI: twenty characters. The shape alone is too loose (any twenty
+    // letters/digits), so the mod-97 remainder has to confirm it — otherwise a
+    // random token would be claimed as an LEI.
+    if (LEI_RE.test(normalized) && leiPasses(normalized))
+        return 'lei';
+    // ORCID: claimed only inside the 0000-000x block ORCID issues from, so that
+    // sixteen-digit card numbers keep falling through to Luhn (an ORCID outside
+    // that block still validates when the scheme is named explicitly).
+    if (ORCID_DETECT_RE.test(normalized))
+        return 'orcid';
     if (/^\d{13}$/.test(normalized))
         return 'ean13';
     if (/^\d{12}$/.test(normalized))

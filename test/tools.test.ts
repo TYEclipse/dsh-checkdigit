@@ -106,7 +106,7 @@ describe('checkdigit_validate', () => {
 describe('checkdigit_info', () => {
   it('lists all schemes', async () => {
     const result = await tools.checkdigit_info.execute({})
-    expect(result.schemes.length).toBe(17)
+    expect(result.schemes.length).toBe(19)
     expect(result.schemes.map((s) => s.id)).toContain('iban')
     expect(result.schemes.map((s) => s.id)).toContain('cas')
     expect(result.schemes.map((s) => s.id)).toContain('aba')

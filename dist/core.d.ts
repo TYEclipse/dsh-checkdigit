@@ -9,7 +9,7 @@
  * @module dsh-checkdigit/core
  */
 /** Identifiers of every supported check-digit scheme. */
-export declare const SCHEME_IDS: readonly ["luhn", "verhoeff", "damm", "isbn10", "isbn13", "ean8", "ean13", "upca", "gtin14", "issn", "isin", "cusip", "sedol", "iban", "cas", "aba", "npi"];
+export declare const SCHEME_IDS: readonly ["luhn", "verhoeff", "damm", "isbn10", "isbn13", "ean8", "ean13", "upca", "gtin14", "issn", "isin", "cusip", "sedol", "iban", "cas", "aba", "npi", "lei", "orcid"];
 export type SchemeId = (typeof SCHEME_IDS)[number];
 export interface SchemeMeta {
     id: SchemeId;
@@ -43,6 +43,8 @@ export interface SchemeSpec {
     validate: (value: string) => CheckResult;
 }
 export declare const SCHEMES: Record<SchemeId, SchemeSpec>;
+/** True when the value has LEI shape (twenty letters/digits) — checksum not checked. */
+export declare function leiShaped(value: string): boolean;
 /**
  * Detect the most likely scheme for a value. Ordering matters: stricter
  * formats (ISIN, CUSIP, ISBN-10) are tested before the loose digit fallbacks.

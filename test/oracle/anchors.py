@@ -232,6 +232,56 @@ def npi_valid(value: str) -> bool:
     return len(value) == 10 and value.isdigit() and value[0] in "12" and npi(value[:-1]) == value[-1]
 
 
+# --------------------------------------------------------------------------
+# LEI (ISO 17442) — twenty characters: a four-character LOU prefix, two
+# reserved characters ("00"), a twelve-character entity id and the two check
+# digits at the END. ISO/IEC 7064 MOD 97-10 over the letters expanded
+# A=10 … Z=35, with nothing rotated: the whole value must leave remainder 1.
+#
+# The check-digit position is the part people get wrong from memory (it is NOT
+# where IBAN puts them), so the self-checks below pin it on LEIs GLEIF actually
+# issued: for those, characters 5–6 are "00" and the generator reproduces the
+# last two characters.
+# --------------------------------------------------------------------------
+
+
+def lei(payload: str) -> str:
+    """Two check digits for an 18-character LEI payload."""
+    return str(98 - mod97(expand_letters(payload + "00"))).zfill(2)
+
+
+def lei_valid(value: str) -> bool:
+    up = value.upper().replace(" ", "").replace("-", "")
+    if len(up) != 20 or not re.fullmatch(r"[A-Z0-9]{20}", up):
+        return False
+    if up[4:6] != "00":
+        return False
+    if mod97(expand_letters(up)) != 1:
+        return False
+    return lei(up[:-2]) == up[-2:]
+
+
+# --------------------------------------------------------------------------
+# ORCID iD — fifteen digits plus a check character under ISO/IEC 7064 MOD 11-2.
+# Digit i (1-based) carries weight 2^(16−i); the check character is
+# (1 − total) mod 11, with 10 rendered as X. A remainder of 0 therefore yields
+# the digit 1 — the corner the ORCID write-up's "12 − remainder" hides.
+# --------------------------------------------------------------------------
+
+
+def orcid(payload: str) -> str:
+    total = sum(int(ch) * 2 ** (16 - (i + 1)) for i, ch in enumerate(payload))
+    result = (1 - total) % 11
+    return "X" if result == 10 else str(result)
+
+
+def orcid_valid(value: str) -> bool:
+    up = value.upper().replace(" ", "").replace("-", "")
+    if not re.fullmatch(r"\d{15}[\dX]", up):
+        return False
+    return orcid(up[:15]) == up[-1]
+
+
 
 # --------------------------------------------------------------------------
 # Validators (the repair enumerator confirms candidates with these)
@@ -275,13 +325,17 @@ def valid(scheme: str, value: str) -> bool:
         return sedol_valid(value)
     if scheme == "npi":
         return npi_valid(value)
+    if scheme == "lei":
+        return lei_valid(value)
+    if scheme == "orcid":
+        return orcid_valid(value)
     raise ValueError(f"unknown scheme {scheme}")
 
 
 REPAIR_LIMIT = 20
-ALPHANUMERIC = ("isin", "cusip", "sedol", "iban")
-X_SCHEMES = ("isbn10", "issn")
-UPPERCASE = ("isin", "cusip", "sedol", "iban", "isbn10", "issn")
+ALPHANUMERIC = ("isin", "cusip", "sedol", "iban", "lei")
+X_SCHEMES = ("isbn10", "issn", "orcid")
+UPPERCASE = ("isin", "cusip", "sedol", "iban", "isbn10", "issn", "lei", "orcid")
 
 
 def normalize(scheme: str, value: str) -> str:
@@ -293,6 +347,8 @@ def expected_check(scheme: str, value: str) -> str:
     """Expected check characters for a normalised, shape-valid value."""
     if scheme == "iban":
         return iban_check_digits(value[:2], value[4:])
+    if scheme == "lei":
+        return lei(value[:-2])
     payload = value[:-1]
     return {
         "luhn": luhn,
@@ -311,13 +367,19 @@ def expected_check(scheme: str, value: str) -> str:
         "aba": aba,
         "sedol": sedol,
         "npi": npi,
+        "orcid": orcid,
     }[scheme](payload)
 
 
 def repairs(scheme: str, value: str) -> tuple[int, list[tuple[str, int, str, str, str]]]:
     """(total, first 20 repairs) — mirror of the src/repair.ts contract."""
     normalized = normalize(scheme, value)
-    span_start, span_size = (2, 2) if scheme == "iban" else (len(normalized) - 1, 1)
+    if scheme == "iban":
+        span_start, span_size = 2, 2
+    elif scheme == "lei":
+        span_start, span_size = len(normalized) - 2, 2
+    else:
+        span_start, span_size = len(normalized) - 1, 1
     found: list[tuple[str, int, str, str, str]] = []
     seen: set[str] = set()
 
@@ -330,9 +392,7 @@ def repairs(scheme: str, value: str) -> tuple[int, list[tuple[str, int, str, str
     expected = expected_check(scheme, normalized)
 
     def check_repaired() -> str:
-        if scheme == "iban":
-            return normalized[:span_start] + expected + normalized[span_start + span_size:]
-        return normalized[:-1] + expected
+        return normalized[:span_start] + expected + normalized[span_start + span_size:]
 
     check_candidate = check_repaired()
     if valid(scheme, check_candidate):
@@ -370,6 +430,8 @@ ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}\d$")
 CUSIP_RE = re.compile(r"^[A-Z0-9*@#]{8}\d$")
 SEDOL_RE = re.compile(r"^[BCDFGHJKLMNPQRSTVWXYZ][0-9BCDFGHJKLMNPQRSTVWXYZ]{5}\d$")
 IBAN_SHAPE_RE = re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{11,28}$")
+LEI_SHAPE_RE = re.compile(r"^[A-Z0-9]{18}\d{2}$")
+ORCID_DETECT_RE = re.compile(r"^0000\d{11}[\dX]$")
 
 
 def detect(value: str) -> str | None:
@@ -387,6 +449,10 @@ def detect(value: str) -> str | None:
         return "sedol"
     if IBAN_SHAPE_RE.match(norm):
         return "iban"
+    if LEI_SHAPE_RE.match(norm) and lei_valid(norm):
+        return "lei"
+    if ORCID_DETECT_RE.match(norm):
+        return "orcid"
     if re.fullmatch(r"\d{13}", norm):
         return "ean13"
     if re.fullmatch(r"\d{12}", norm):
@@ -449,6 +515,196 @@ BATCH_VALUES = [
 BATCH_NPI_VALUES = ["1234567893", "1245319599", "1234567890"]
 
 # --------------------------------------------------------------------------
+# Published identifier corpora — the LEIs come from GLEIF's own API and the
+# ORCID iDs from the ORCID public record API, so the anchors below are values
+# the standards bodies actually issued, not values this file invented.
+# --------------------------------------------------------------------------
+
+REAL_LEIS = [
+    "787200X2SJ7WXPUZ4169",
+    "5299008IX1AQQJV9RG61",
+    "5299003A531TLH368K72",
+    "529900T8BM49AURSDO55",
+]
+REAL_LEIS_NOTE = "GLEIF-issued (api.gleif.org), all carry the reserved \"00\" at positions 5–6"
+
+REAL_ORCIDS = [
+    "0000000218250097",
+    "0000000210286941",
+    "0000000155915599",
+    "0000000235552193",
+    "0000000177100796",
+    "0000000234090724",
+]
+
+
+def _orcid_x_fixture() -> str:
+    """A fifteen-digit payload whose MOD 11-2 check character is X."""
+    for last in range(10):
+        payload = f"00001234567890{last}"[:15]
+        if orcid(payload) == "X":
+            return payload
+    raise AssertionError("no MOD 11-2 payload renders as X in this range")
+
+
+ORCID_X_PAYLOAD = _orcid_x_fixture()
+
+
+# --------------------------------------------------------------------------
+# Free-text scan — second-source mirror of the documented checkdigit_scan
+# contract (src/scan.ts): tokenise on whitespace, trim the punctuation people
+# wrap numbers in, and merge adjacent groups ONLY when the merged value passes
+# its own check digit.
+# --------------------------------------------------------------------------
+
+SCAN_MERGE_GROUPS = 8
+SCAN_GROUP_MAX = 12
+SCAN_MERGED_MAX = 34
+LUHN_SCAN_MIN = 12
+LUHN_SCAN_MAX = 19
+
+
+def check(scheme: str, value: str) -> dict:
+    """(valid, checkDigit, expected) — mirror of SCHEMES[scheme].validate()."""
+    norm = normalize(scheme, value)
+    ok = valid(scheme, norm)
+    if scheme == "iban":
+        # IBAN keeps its two check digits right after the country code.
+        check_digit = norm[2:4]
+    elif scheme == "lei":
+        check_digit = norm[-2:] if len(norm) >= 2 else ""
+    else:
+        check_digit = norm[-1:] if len(norm) >= 1 else ""
+    # The tools and the scheme validators both report the expected check
+    # characters whether or not the value passes; mirror that (a shape the
+    # scheme cannot even parse yields '').
+    try:
+        expected = expected_check(scheme, norm)
+    except Exception:
+        expected = ""
+    return {"valid": ok, "checkDigit": check_digit, "expected": expected}
+
+
+def evaluate(value: str, schemes: list[str] | None):
+    if schemes:
+        fallback = None
+        for scheme in schemes:
+            result = check(scheme, value)
+            if result["valid"]:
+                return {"scheme": scheme, **result}
+            if fallback is None and result["expected"] != "":
+                fallback = {"scheme": scheme, **result}
+        return fallback
+    scheme = detect(value)
+    if scheme is None:
+        return None
+    return {"scheme": scheme, **check(scheme, value)}
+
+
+def _plausible(candidate: dict, value: str, explicit: bool) -> bool:
+    if explicit or candidate["scheme"] != "luhn":
+        return True
+    digits = value.replace(" ", "").replace("-", "").replace(".", "")
+    return LUHN_SCAN_MIN <= len(digits) <= LUHN_SCAN_MAX
+
+
+def _tokens(text: str) -> list[dict]:
+    tokens = []
+    for match in re.finditer(r"\S+", text):
+        raw = match.group(0)
+        core = re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", raw)
+        if core == "":
+            continue
+        offset = raw.index(core)
+        tokens.append({"core": core, "start": match.start() + offset, "end": match.start() + offset + len(core)})
+    return tokens
+
+
+def scan_text(text: str, schemes: list[str] | None = None, include_invalid: bool = False, limit: int = 20) -> dict:
+    tokens = _tokens(text)
+    matches: list[dict] = []
+    total = valid_count = invalid_count = scanned = 0
+
+    def record(start: int, end: int, candidate: dict, value: str) -> None:
+        nonlocal total, valid_count, invalid_count
+        total += 1
+        if candidate["valid"]:
+            valid_count += 1
+        else:
+            invalid_count += 1
+        if len(matches) >= limit:
+            return
+        matches.append({
+            "value": value,
+            "scheme": candidate["scheme"],
+            "valid": candidate["valid"],
+            "start": start,
+            "end": end,
+            "checkDigit": candidate["checkDigit"],
+            "expected": candidate["expected"],
+        })
+
+    explicit = bool(schemes)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        single = evaluate(token["core"], schemes) if len(token["core"]) >= 3 else None
+        if len(token["core"]) >= 3:
+            scanned += 1
+        if single is not None and _plausible(single, token["core"], explicit):
+            if single["valid"] or include_invalid:
+                record(token["start"], token["end"], single, token["core"])
+                i += 1
+                continue
+        # A merge may only start from a token that carries a digit, and the
+        # longest grouping is tried first (complete identifier beats a prefix).
+        if not re.search(r"\d", token["core"]):
+            i += 1
+            continue
+        merged = False
+        for k in range(min(SCAN_MERGE_GROUPS, len(tokens) - i), 1, -1):
+            group = tokens[i:i + k]
+            if not all(1 <= len(item["core"]) <= SCAN_GROUP_MAX for item in group):
+                continue
+            joined = "".join(item["core"] for item in group)
+            if len(joined) > SCAN_MERGED_MAX:
+                continue
+            candidate = evaluate(joined, schemes)
+            if candidate is None or not candidate["valid"] or not _plausible(candidate, joined, explicit):
+                continue
+            record(group[0]["start"], group[-1]["end"], candidate, text[group[0]["start"]:group[-1]["end"]])
+            i += k
+            merged = True
+            break
+        if merged:
+            continue
+        i += 1
+
+    return {
+        "scanned": scanned,
+        "total": total,
+        "validCount": valid_count,
+        "invalidCount": invalid_count,
+        "truncated": total > len(matches),
+        "matches": matches,
+    }
+
+
+SCAN_TEXT = (
+    "Invoice 2026-11: card 4111 1111 1111 1111 charged, ISBN 978 0 306 40615 7, "
+    "LEI 529900T8BM49AURSDO55, ORCID 0000-0002-1825-0097, "
+    "IBAN GB82 WEST 1234 5698 7654 32, SEDOL B15KXQ8. "
+    "Order 1234 has 77 items; bad copy 9780306406158."
+)
+
+SCAN_BAD_TEXT = "Card 4111 1111 1111 1111 ok; code 4111 1111 1111 1112 fails; ISBN 9780306406158 too."
+
+SCAN_NPI_TEXT = "NPI 1234567893 and 1245319599 and 1234567890."
+
+SCAN_SHORT_TEXT = "Order 1234 has 77 items."
+
+
+# --------------------------------------------------------------------------
 # Self-checks against published worked examples (fail loudly, never silently)
 # --------------------------------------------------------------------------
 
@@ -500,11 +756,41 @@ SELF_CHECKS: list[tuple[str, object, object]] = [
     ("luhn(123456789) — plain Luhn disagrees with NPI", luhn("123456789"), "7"),
     ("npi_valid(0234567893) — entity type 0", npi_valid("0234567893"), False),
     ("npi_valid(3234567893) — entity type 3", npi_valid("3234567893"), False),
+    # LEI: GLEIF-issued identifiers. The generator must reproduce the last two
+    # characters, characters 5–6 must be the reserved "00", and the whole value
+    # must leave remainder 1 (mod 97) — three independent statements about the
+    # same string, so a misplaced check-digit span cannot pass.
+    ("lei(787200X2SJ7WXPUZ41)", lei("787200X2SJ7WXPUZ41"), "69"),
+    ("lei(5299008IX1AQQJV9RG)", lei("5299008IX1AQQJV9RG"), "61"),
+    ("lei(529900T8BM49AURSDO)", lei("529900T8BM49AURSDO"), "55"),
+    ("lei_valid on GLEIF-issued LEIs", [lei_valid(v) for v in REAL_LEIS], [True, True, True, True]),
+    ("reserved characters in issued LEIs", [v[4:6] for v in REAL_LEIS], ["00", "00", "00", "00"]),
+    ("mod97 of a GLEIF-issued LEI", mod97(expand_letters("787200X2SJ7WXPUZ4169")), 1),
+    ("lei_valid(787200X2SJ7WXPUZ4168) — last digit changed", lei_valid("787200X2SJ7WXPUZ4168"), False),
+    ("lei_valid(787201X2SJ7WXPUZ4169) — reserved slot not 00", lei_valid("787201X2SJ7WXPUZ4169"), False),
+    ("lei_valid(787200X2SJ7WXPUZ41) — truncated", lei_valid("787200X2SJ7WXPUZ41"), False),
+    # ORCID: iDs from the public ORCID record API. 0000-0002-1825-0097 is the
+    # documented Josiah Carberry example; 0000-0002-1028-6941 covers the
+    # remainder-0 corner where "12 − remainder" would print 12 instead of 1.
+    ("orcid(000000021825009)", orcid("000000021825009"), "7"),
+    ("orcid(000000021028694) — remainder 0 → digit 1", orcid("000000021028694"), "1"),
+    ("orcid_valid on real ORCID iDs", [orcid_valid(v) for v in REAL_ORCIDS], [True] * 6),
+    ("orcid_valid(0000000218250098) — wrong check character", orcid_valid("0000000218250098"), False),
+    ("orcid X fixture check character", orcid(ORCID_X_PAYLOAD), "X"),
+    ("orcid_valid of the X fixture", orcid_valid(ORCID_X_PAYLOAD + "X"), True),
+    ("orcid_valid of the X fixture with 0", orcid_valid(ORCID_X_PAYLOAD + "0"), False),
+    # Detection: a LEI is only claimed when the mod-97 remainder confirms it, and
+    # a sixteen-digit card number stays Luhn (ORCID detection is limited to the
+    # 0000-000x block).
+    ("detect(GLEIF LEI)", detect("529900T8BM49AURSDO55"), "lei"),
+    ("detect(ORCID with hyphens)", detect("0000-0002-1825-0097"), "orcid"),
+    ("detect(16-digit card)", detect("4111111111111111"), "luhn"),
 ]
 
 SCHEME_IDS = [
     "luhn", "verhoeff", "damm", "isbn10", "isbn13", "ean8", "ean13", "upca",
     "gtin14", "issn", "isin", "cusip", "sedol", "iban", "cas", "aba", "npi",
+    "lei", "orcid",
 ]
 
 # Fixtures shared with the test files: each one is repaired here first, so the
@@ -521,7 +807,20 @@ FIXTURES: list[tuple[str, str, str]] = [
     ("sedol", "B15KXQK", "check character mistyped as a letter"),
     ("npi", "1234567894", "wrong check digit"),
     ("npi", "1245319959", "swapped adjacent digits"),
+    ("lei", "787200X2SJ7WXPUZ4168", "last check digit wrong (GLEIF value 4169)"),
+    ("orcid", "0000000218250098", "wrong check character"),
 ]
+
+
+def scan_report(text: str, schemes: list[str] | None = None, include_invalid: bool = False, limit: int = 20) -> None:
+    """Print one scan report in the shape the tests assert."""
+    report = scan_text(text, schemes=schemes, include_invalid=include_invalid, limit=limit)
+    print(f"  text={text!r}")
+    print(f"  scanned={report['scanned']} total={report['total']} valid={report['validCount']} "
+          f"invalid={report['invalidCount']} truncated={report['truncated']}")
+    for match in report["matches"]:
+        print(f"  {match['scheme']} {match['value']!r} [{match['start']},{match['end']}) "
+              f"valid={match['valid']} check={match['checkDigit']!r} expected={match['expected']!r}")
 
 
 def main(argv: list[str]) -> int:
@@ -556,6 +855,41 @@ def main(argv: list[str]) -> int:
     print(f"  expected check for 1234567894 = {npi('123456789')}, for 1245319959 = {npi('124531995')}")
     print(f"  plain luhn(123456789) = {luhn('123456789')}  (NPI uses the 80840 prefix instead)")
     print(f"  npi_valid(0234567893) = {npi_valid('0234567893')}")
+
+    print()
+    print("lei anchors (payload -> last two check digits)")
+    for payload in ("787200X2SJ7WXPUZ41", "5299008IX1AQQJV9RG", "5299003A531TLH368K", "529900T8BM49AURSDO"):
+        print(f"  lei({payload}) = {lei(payload)}")
+    for value in REAL_LEIS:
+        print(f"  lei_valid({value}) = {lei_valid(value)} (reserved={value[4:6]}, mod97={mod97(expand_letters(value))})")
+    for value in ("787200X2SJ7WXPUZ4168", "787201X2SJ7WXPUZ4169", "787200X2SJ7WXPUZ41"):
+        print(f"  lei_valid({value}) = {lei_valid(value)}")
+
+    print()
+    print("orcid anchors (15-digit payload -> check character)")
+    for payload in ("000000021825009", "000000021028694", "000000015591559", "000000023555219", ORCID_X_PAYLOAD):
+        print(f"  orcid({payload}) = {orcid(payload)}")
+    for value in REAL_ORCIDS:
+        print(f"  orcid_valid({value}) = {orcid_valid(value)}")
+    print(f"  orcid_valid({ORCID_X_PAYLOAD}X) = {orcid_valid(ORCID_X_PAYLOAD + 'X')}")
+    print(f"  orcid_valid({ORCID_X_PAYLOAD}0) = {orcid_valid(ORCID_X_PAYLOAD + '0')}")
+    print(f"  detect(529900T8BM49AURSDO55) = {detect('529900T8BM49AURSDO55')}")
+    print(f"  detect(0000-0002-1825-0097) = {detect('0000-0002-1825-0097')}")
+    print(f"  detect(4111111111111111) = {detect('4111111111111111')}")
+
+    print()
+    print("scan anchors (checkdigit_scan, auto-detect)")
+    scan_report(SCAN_TEXT)
+    print()
+    print("scan anchors (includeInvalid=true)")
+    scan_report(SCAN_BAD_TEXT, include_invalid=True)
+    print()
+    print("scan anchors (schemes=['npi'], includeInvalid=true, limit=2)")
+    scan_report(SCAN_NPI_TEXT, schemes=["npi"], include_invalid=True, limit=2)
+    print()
+    print("scan anchors (short numbers are not card numbers)")
+    scan_report(SCAN_SHORT_TEXT)
+
 
     print()
     print("batch report anchors (checkdigit_batch, auto-detect)")

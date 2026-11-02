@@ -18,7 +18,7 @@
  * @module dsh-checkdigit/repair
  */
 
-import { SCHEMES, detectScheme, type SchemeId } from './core.ts'
+import { SCHEMES, detectScheme, leiShaped, type SchemeId } from './core.ts'
 
 /** Maximum number of repairs returned (the count is always reported in full). */
 export const REPAIR_LIMIT = 20
@@ -58,12 +58,12 @@ export interface RepairResult {
 }
 
 /** Characters an edit may introduce; letters only for the alphanumeric schemes. */
-const ALPHANUMERIC: readonly SchemeId[] = ['isin', 'cusip', 'sedol', 'iban']
+const ALPHANUMERIC: readonly SchemeId[] = ['isin', 'cusip', 'sedol', 'iban', 'lei']
 /** Schemes whose check character may be the letter X. */
-const X_SCHEMES: readonly SchemeId[] = ['isbn10', 'issn']
+const X_SCHEMES: readonly SchemeId[] = ['isbn10', 'issn', 'orcid']
 
 /** Drop separators (spaces, dashes, dots) and fold case for the letter schemes. */
-const UPPERCASE_SCHEMES: readonly SchemeId[] = ['isin', 'cusip', 'sedol', 'iban', 'isbn10', 'issn']
+const UPPERCASE_SCHEMES: readonly SchemeId[] = ['isin', 'cusip', 'sedol', 'iban', 'isbn10', 'issn', 'lei', 'orcid']
 
 function normalize(scheme: SchemeId, value: string): string {
   const stripped = value.replace(/[\s.-]/g, '')
@@ -78,9 +78,13 @@ function emptyResult(scheme: string, detail: string): RepairResult {
   return { valid: false, scheme, checkDigit: '', expected: '', total: 0, truncated: false, repairs: [], detail }
 }
 
-/** Position of the check characters: the trailing character(s) of the value. */
+/** Position of the check characters inside the normalised value. */
 function checkSpan(scheme: SchemeId, length: number): { start: number; size: number } {
-  return scheme === 'iban' ? { start: 2, size: 2 } : { start: length - 1, size: 1 }
+  // IBAN keeps its two check digits right after the country code; LEI keeps its
+  // two at the end; every other scheme has a single trailing check character.
+  if (scheme === 'iban') return { start: 2, size: 2 }
+  if (scheme === 'lei') return { start: length - 2, size: 2 }
+  return { start: length - 1, size: 1 }
 }
 
 /**
@@ -88,7 +92,11 @@ function checkSpan(scheme: SchemeId, length: number): { start: number; size: num
  * when omitted).
  */
 export function repairIdentifier(value: string, scheme?: SchemeId): RepairResult {
-  const resolved: SchemeId | undefined = scheme ?? detectScheme(value)
+  // Detection normally confirms a LEI's mod-97 remainder, which is exactly the
+  // part a broken LEI fails — but "repair" is the tool for broken values, so a
+  // shape-valid LEI is claimed here and its check digits searched like any
+  // other scheme's.
+  const resolved: SchemeId | undefined = scheme ?? detectScheme(value) ?? (leiShaped(value) ? 'lei' : undefined)
   if (resolved === undefined) return emptyResult('unknown', `unrecognized identifier format: ${value}`)
 
   const spec = SCHEMES[resolved]
@@ -120,11 +128,9 @@ export function repairIdentifier(value: string, scheme?: SchemeId): RepairResult
   }
   const accepts = (candidate: string): boolean => spec.validate(candidate).valid
 
-  // 1. Check character(s) only — for IBAN those are the two digits at
-  //    positions 3–4, for every other scheme it is the trailing character.
-  const checkRepair = resolved === 'iban'
-    ? normalized.slice(0, span.start) + base.expected + normalized.slice(span.start + span.size)
-    : normalized.slice(0, -1) + base.expected
+  // 1. Check character(s) only — the span is wherever the scheme puts them
+  //    (IBAN: positions 3–4, LEI: the last two, everyone else: the last one).
+  const checkRepair = normalized.slice(0, span.start) + base.expected + normalized.slice(span.start + span.size)
   if (accepts(checkRepair)) {
     push({
       type: 'check-digit',
