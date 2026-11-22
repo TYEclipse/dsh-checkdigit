@@ -2,6 +2,10 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-checkdigit`
 
+## [0.6.0] — 2026-11-23
+### Minor · R108
+- [自主进化] R108 新增 checkdigit_normalize（规范写法：按标准排版并报告每处改动）
+
 ## [0.5.0] — 2026-11-03
 ### Minor · R88
 - **新方案 `lei`（ISO 17442 法人识别码）**：20 位（4 位 LOU 前缀 + 保留 `00` + 12 位主体 + **末尾两位** mod 97 校验位，字母按 A=10…Z=35 展开）——校验位位置与 IBAN 不同，按 GLEIF 实发 LEI 逐条钉住（`529900T8BM49AURSDO55` 等 4 个真实号；生成器 10/10 复现实发校验位）；保留位不是 `00` 或长度不对时明确报错

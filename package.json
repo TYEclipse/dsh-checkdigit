@@ -1,7 +1,7 @@
 {
   "name": "dsh-checkdigit",
-  "version": "0.5.0",
-  "description": "Check-digit mathematics toolbox for DeepSeek Harness (dsh): generate, validate, repair and detect check digits for Luhn, Verhoeff, Damm, ISBN-10/13, EAN-8/13, UPC-A, GTIN-14, ISSN, ISIN, CUSIP, SEDOL, IBAN, CAS Registry Number, ABA routing number and NPI, plus ISBN-10 <-> ISBN-13 conversion, a single-edit repair search and a batch validator for whole columns of identifiers — zero runtime dependencies",
+  "version": "0.6.0",
+  "description": "Check-digit mathematics toolbox for DeepSeek Harness (dsh): generate, validate, repair, normalise and detect check digits for Luhn, Verhoeff, Damm, ISBN-10/13, EAN-8/13, UPC-A, GTIN-14, ISSN, ISIN, CUSIP, SEDOL, IBAN, CAS Registry Number, ABA routing number and NPI, plus ISBN-10 <-> ISBN-13 conversion, a single-edit repair search, a batch validator for whole columns of identifiers and a free-text scanner — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,7 +35,9 @@
     "cusip",
     "sedol",
     "npi",
-    "iban"
+    "iban",
+    "identifier-normalization",
+    "canonical-form"
   ],
   "license": "MIT",
   "repository": {

@@ -705,6 +705,188 @@ SCAN_SHORT_TEXT = "Order 1234 has 77 items."
 
 
 # --------------------------------------------------------------------------
+# Normalisation — second-source mirror of src/normalize.ts. The layout applied
+# is the one the identifier's own standard prints: ISO 13616 for IBAN, ORCID's
+# own display form, ISO 3297 for ISSN, and the CAS registry layout. Every other
+# scheme stays unbroken, because its printed form either needs data this plugin
+# does not ship (the annual ISBN registration-group range tables) or varies by
+# issuer (card numbers, IMEIs) — a guessed grouping would look canonical while
+# being wrong.
+# --------------------------------------------------------------------------
+
+SEPARATOR_RE = re.compile(r"[\s.\-]")
+
+FIXED_LAYOUTS = {
+    "iban": ("4-4-4-…-4", " "),
+    "orcid": ("4-4-4-4", "-"),
+    "issn": ("4-4", "-"),
+    "cas": ("n-2-1", "-"),
+}
+
+SHAPES = {
+    "iban": re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{11,28}$"),
+    "orcid": re.compile(r"^\d{15}[\dX]$"),
+    "issn": re.compile(r"^\d{7}[\dX]$"),
+    "cas": re.compile(r"^\d{3,10}$"),
+}
+
+NOTES = {
+    "isbn10": "ISBN hyphenation needs the registration-group range tables published annually by the ISBN agency; "
+              "this plugin does not ship them, so the unbroken digit form is returned instead of a guessed grouping",
+    "isbn13": "ISBN hyphenation needs the registration-group range tables published annually by the ISBN agency; "
+              "this plugin does not ship them, so the unbroken digit form is returned instead of a guessed grouping",
+    "luhn": "card and IMEI printing varies by issuer, network and device, so no single separator layout is claimed",
+}
+
+
+def apply_layout(scheme: str, compact: str) -> str:
+    if scheme == "iban":
+        return " ".join(compact[i:i + 4] for i in range(0, len(compact), 4))
+    if scheme == "orcid":
+        return "-".join(compact[i:i + 4] for i in range(0, 16, 4))
+    if scheme == "issn":
+        return compact[:4] + "-" + compact[4:]
+    if scheme == "cas":
+        return compact[:-3] + "-" + compact[-3:-1] + "-" + compact[-1:]
+    return compact
+
+
+def separator_runs(raw: str) -> list[str]:
+    runs = re.findall(r"[\s.\-]+", raw.strip())
+    return [" " if all(ch.isspace() for ch in run) else run for run in runs]
+
+
+def grouping_label(raw: str) -> str | None:
+    parts = [p for p in re.split(r"[\s.\-]+", raw.strip()) if p]
+    return None if len(parts) < 2 else "-".join(str(len(p)) for p in parts)
+
+
+def normalize_identifier(value: str, scheme: str | None = None) -> dict:
+    detected = scheme or detect(value)
+    if detected is None:
+        return {
+            "valid": False,
+            "scheme": "unknown",
+            "error": "no supported scheme matches this value; name the scheme to normalise it anyway",
+        }
+    compact = SEPARATOR_RE.sub("", value).upper()
+    shape_ok = detected not in SHAPES or bool(SHAPES[detected].match(compact))
+    has_layout = detected in FIXED_LAYOUTS
+    normalized = apply_layout(detected, compact) if shape_ok and has_layout else compact
+
+    changes: list[tuple[str, str]] = []
+    if any(ch.islower() for ch in value) and value != value.upper():
+        changes.append(("case", "uppercased the identifier"))
+    typed = len(SEPARATOR_RE.findall(value))
+    label, sep = FIXED_LAYOUTS.get(detected, ("", ""))
+    sep_word = "spaces" if sep == " " else "hyphens"
+    layout_changed = has_layout and shape_ok and grouping_label(value) != grouping_label(normalized)
+    if layout_changed:
+        changes.append((
+            "grouping",
+            f"inserted {sep_word} every {label} group" if typed == 0 else f"re-grouped with {sep_word} as {label}",
+        ))
+    elif typed > 0 and not (has_layout and shape_ok):
+        changes.append(("separators", f"removed {typed} separator{'s' if typed != 1 else ''}"))
+    elif typed > 0 and separator_runs(value) != separator_runs(normalized):
+        changes.append(("separators", f"replaced {typed} separator{'s' if typed != 1 else ''} with the {label} layout"))
+
+    result = {
+        "valid": valid(detected, compact) and shape_ok,
+        "scheme": detected,
+        "normalized": normalized,
+        "changed": normalized != value,
+        "changes": changes,
+    }
+    expected = expected_check(detected, compact) if shape_ok else ""
+    result["checkDigit"] = compact[-1] if detected != "iban" and shape_ok else (compact[2:4] if shape_ok else "")
+    result["expected"] = expected
+    if has_layout and shape_ok:
+        result["grouping"] = label
+    if detected in NOTES:
+        result["note"] = NOTES[detected]
+    return result
+
+
+NORMALIZE_FIXTURES: list[tuple[str, str | None, str]] = [
+    ("GB82 WEST 1234 5698 7654 32", None, "IBAN already in its printed form"),
+    ("gb82west12345698765432", None, "IBAN typed lower case and unbroken"),
+    ("GB82-WEST-1234-5698-7654-32", None, "IBAN hyphenated"),
+    ("0000-0002-1028-6941", None, "ORCID in its printed form"),
+    ("0000000210286941", None, "ORCID unbroken"),
+    (ORCID_X_PAYLOAD.lower() + "x", None, "ORCID ending in X, typed lower case"),
+    ("0378-5955", "issn", "ISSN in its printed form (8 digits alone are read as EAN-8)"),
+    ("03785955", "issn", "ISSN unbroken, scheme named"),
+    ("7732185", "cas", "CAS unbroken, scheme named (digits alone are read as Luhn)"),
+    ("7732-18-5", None, "CAS in its printed form"),
+    ("529900t8bm49aursdo55", None, "LEI typed lower case"),
+    ("978 0 306 40615 7", "isbn13", "ISBN-13 grouped by hand, scheme named (a 978-prefixed 13-digit value auto-detects as ean13)"),
+    ("9780306406157", None, "ISBN-13 unbroken, auto-detected as ean13 — same arithmetic, no hyphenation either way"),
+    ("4111 1111 1111 1111", None, "card number"),
+    ("4111 1111 1111 1112", None, "card number with a wrong check digit"),
+    ("not an identifier", None, "no scheme matches"),
+]
+
+
+def normalize_anchors() -> None:
+    for value, scheme, note in NORMALIZE_FIXTURES:
+        result = normalize_identifier(value, scheme)
+        print(f"  {value!r} (scheme={scheme}) — {note}")
+        print(
+            f"    scheme={result['scheme']} valid={result['valid']} normalized={result.get('normalized')!r} "
+            f"changed={result.get('changed')}"
+        )
+        print(f"    changes={result.get('changes')} grouping={result.get('grouping')!r} note={'yes' if 'note' in result else 'no'}")
+        if "error" in result:
+            print(f"    error={result['error']!r}")
+
+
+NORMALIZE_SHAPES = {
+    "orcid": r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]",
+    "issn": r"\d{4}-[\dX]{4}",
+    "cas": r"\d{2,7}-\d{2}-\d",
+}
+
+
+def normalize_self_checks() -> list[str]:
+    """Structural statements about the normaliser that do not compare it with itself."""
+    problems: list[str] = []
+    for value, scheme, _note in NORMALIZE_FIXTURES:
+        first = normalize_identifier(value, scheme)
+        if "normalized" not in first:
+            if first.get("scheme") != "unknown" or "error" not in first:
+                problems.append(f"{value!r}: unknown scheme reported without an error string")
+            continue
+        once = first["normalized"]
+        twice = normalize_identifier(once, first["scheme"])
+        if twice["normalized"] != once or twice["changes"]:
+            problems.append(f"{value!r}: normalisation is not idempotent ({once!r} -> {twice['normalized']!r})")
+        if twice["valid"] != first["valid"]:
+            problems.append(f"{value!r}: verdict changed when the canonical form was re-checked")
+        flattened = SEPARATOR_RE.sub("", once).upper()
+        if valid(first["scheme"], flattened) != first["valid"]:
+            problems.append(f"{value!r}: reported verdict disagrees with the validator on {flattened!r}")
+        if first["scheme"] == "iban" and " " in once:
+            if any(pos % 5 != 4 for pos, ch in enumerate(once) if ch == " "):
+                problems.append(f"{value!r}: IBAN separators are not every four characters")
+            if once.count(" ") != len(once.replace(" ", "")) // 4:
+                problems.append(f"{value!r}: IBAN separator count does not match its length")
+        shape = NORMALIZE_SHAPES.get(first["scheme"])
+        if shape and "grouping" in first and not re.fullmatch(shape, once):
+            problems.append(f"{value!r}: {first['scheme']} layout is not the standard one ({once!r})")
+        if first["scheme"] in ("isbn10", "isbn13") and any(ch in once for ch in " -."):
+            problems.append(f"{value!r}: ISBN must stay unbroken while no range table is shipped")
+        if first["scheme"] in ("isbn10", "isbn13", "luhn") and "note" not in first:
+            problems.append(f"{value!r}: the missing layout was not explained (no note)")
+        if first["scheme"] not in FIXED_LAYOUTS and "grouping" in first:
+            problems.append(f"{value!r}: claimed a layout for a scheme without a fixed printed form")
+    malformed = normalize_identifier("GB82 WEST", None)
+    if "grouping" in malformed:
+        problems.append("a malformed IBAN claimed a layout")
+    return problems
+
+
+# --------------------------------------------------------------------------
 # Self-checks against published worked examples (fail loudly, never silently)
 # --------------------------------------------------------------------------
 
@@ -924,7 +1106,12 @@ def main(argv: list[str]) -> int:
     print(f"  isbn10 {short}: expected='' (wrong shape) → repairs=0")
     print(f"  luhn 79927398713: valid=True → repairs=0")
 
+    print()
+    print("normalisation anchors (checkdigit_normalize)")
+    normalize_anchors()
+
     bad = [label for label, got, want in SELF_CHECKS if got != want]
+    bad.extend(f"normalise: {problem}" for problem in normalize_self_checks())
     if bad:
         print(f"\nFAILED self-checks: {bad}")
         return 1

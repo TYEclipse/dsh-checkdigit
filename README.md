@@ -1,8 +1,8 @@
 # dsh-checkdigit
 
-Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate, repair and detect check digits for **19 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, GTIN-14, ISSN, ISIN, CUSIP, **SEDOL**, IBAN, **CAS Registry Number**, **ABA routing number**, **NPI**, **LEI** and **ORCID iD** — plus an **ISBN-10 ⇄ ISBN-13 converter**, a **single-edit repair search** ("what was this number most likely meant to be?"), a **batch validator** for whole columns of identifiers and a **free-text scanner** that finds identifiers inside prose.
+Check-digit mathematics toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): generate, validate, repair, normalise and detect check digits for **19 schemes** — Luhn, Verhoeff, Damm, ISBN-10, ISBN-13, EAN-8, EAN-13, UPC-A, GTIN-14, ISSN, ISIN, CUSIP, **SEDOL**, IBAN, **CAS Registry Number**, **ABA routing number**, **NPI**, **LEI** and **ORCID iD** — plus an **ISBN-10 ⇄ ISBN-13 converter**, a **single-edit repair search** ("what was this number most likely meant to be?"), a **batch validator** for whole columns of identifiers, a **free-text scanner** that finds identifiers inside prose and a **canonical-form writer** that rewrites an identifier the way its standard prints it.
 
-> 校验位数学工具箱：生成 / 验证 / 修复 / 识别 19 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、GTIN-14、ISSN、ISIN、CUSIP、SEDOL、IBAN、CAS 化学文摘号、ABA 美国银行路由号、NPI 美国医疗提供者号、LEI 法人识别码、ORCID 学者号），另带 ISBN-10 与 ISBN-13 互转、「单字符修复」搜索工具、批量校验工具与**自由文本扫描**工具；零运行时依赖、纯本地算术。
+> 校验位数学工具箱：生成 / 验证 / 修复 / 识别 19 种校验位（Luhn、Verhoeff、Damm、ISBN、EAN、UPC、GTIN-14、ISSN、ISIN、CUSIP、SEDOL、IBAN、CAS 化学文摘号、ABA 美国银行路由号、NPI 美国医疗提供者号、LEI 法人识别码、ORCID 学者号），另带 ISBN-10 与 ISBN-13 互转、「单字符修复」搜索工具、批量校验工具、**自由文本扫描**与**规范写法**工具；零运行时依赖、纯本地算术。
 
 ## Why
 
@@ -123,6 +123,19 @@ checkdigit_scan(text="Invoice 2026-11: card 4111 1111 1111 1111 charged, ISBN 97
 ```
 
 Two rules keep the output honest: a merge may only start from a token that carries a digit (so a word is never glued onto the front of a number), and the longest grouping is tried first so the complete identifier wins over a prefix that happens to pass by chance. Auto-detection reports Luhn only for 12–19 digit runs, so years and house numbers are not "card numbers"; name `schemes` to look for one scheme regardless of shape. `includeInvalid: true` also reports single strings whose format matched but whose check digit failed — a typo hint, with the character it should have been.
+
+### `checkdigit_normalize`
+
+Rewrite an identifier in the form its own standard prints it, and report every edit. Only layouts that the standard itself fixes are applied — IBAN groups of four, ORCID `4-4-4-4`, ISSN `4-4`, CAS `<digits>-<2>-<1>`; everything else comes back as one unbroken run.
+
+```text
+checkdigit_normalize(value="gb82west12345698765432")
+→ scheme: "iban", valid: true, normalized: "GB82 WEST 1234 5698 7654 32", changed: true
+  changes: [case: uppercased the identifier, grouping: inserted spaces every 4-4-4-…-4 group]
+  checkDigit: "82"
+```
+
+Two families get a `note` instead of a guessed layout: ISBN hyphenation needs the annual registration-group range tables, which this plugin does not ship, and card / IMEI printing varies by issuer and device. In those cases `grouping` is absent — a fabricated grouping would look canonical while being wrong. `changes` is empty when the input was already canonical, and the verdict is recomputed on the canonical form, so normalising never turns an invalid number into a valid one.
 
 ### `checkdigit_info`
 

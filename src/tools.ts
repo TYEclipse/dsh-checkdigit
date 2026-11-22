@@ -1,15 +1,16 @@
 /**
- * Tool definitions for dsh-checkdigit: seven tools exposed to every agent via
+ * Tool definitions for dsh-checkdigit: eight tools exposed to every agent via
  * defineTool with strict JSON-schema parameter surfaces and compact text
  * renderers.
  *
- *   checkdigit_generate — compute the check digit(s) for a payload
- *   checkdigit_validate — verify a full identifier (auto-detect the scheme)
- *   checkdigit_repair   — find the single-character edits that make it valid
- *   checkdigit_batch    — validate a whole column of identifiers at once
- *   checkdigit_scan     — find identifiers inside free text
- *   checkdigit_info     — describe the supported schemes
- *   isbn_convert        — convert ISBN-10 <-> ISBN-13 (978 prefix only)
+ *   checkdigit_generate  — compute the check digit(s) for a payload
+ *   checkdigit_validate  — verify a full identifier (auto-detect the scheme)
+ *   checkdigit_repair    — find the single-character edits that make it valid
+ *   checkdigit_batch     — validate a whole column of identifiers at once
+ *   checkdigit_scan      — find identifiers inside free text
+ *   checkdigit_normalize — rewrite an identifier in its standard printed form
+ *   checkdigit_info      — describe the supported schemes
+ *   isbn_convert         — convert ISBN-10 <-> ISBN-13 (978 prefix only)
  *
  * @module dsh-checkdigit/tools
  */
@@ -20,6 +21,7 @@ import { repairIdentifier, type RepairResult } from './repair.ts'
 import { scanText, SCAN_LIMIT, SCAN_TEXT_LIMIT, type ScanResult } from './scan.ts'
 import { convertIsbn, type IsbnConvertResult } from './isbn.ts'
 import { formatIban, ibanDetail, type IbanDetail } from './iban.ts'
+import { normalizeIdentifier, type NormalizeResult } from './normalize.ts'
 
 export interface ToolSet {
   checkdigit_generate: ToolDefinition
@@ -27,6 +29,7 @@ export interface ToolSet {
   checkdigit_repair: ToolDefinition
   checkdigit_batch: ToolDefinition
   checkdigit_scan: ToolDefinition
+  checkdigit_normalize: ToolDefinition
   checkdigit_info: ToolDefinition
   isbn_convert: ToolDefinition
 }
@@ -181,6 +184,18 @@ function renderIsbnConvert(_args: { isbn: string }, value: unknown): string {
   const result = value as IsbnConvertResult
   if (!result.valid) return `isbn_convert: ${result.error}`
   return `isbn_convert: ${result.source} ${result.direction === 'to13' ? '→' : '←'} ${result.converted} (${result.formatted})`
+}
+
+function renderNormalize(_args: { value: string; scheme?: string }, value: unknown): string {
+  const result = value as NormalizeResult
+  if (result.error !== undefined) return `checkdigit_normalize: ${result.error}`
+  const state = result.valid ? 'valid' : `invalid (expected check digit ${result.expected})`
+  const head = `checkdigit_normalize — ${result.scheme}, ${state}: ${result.normalized}`
+  const edits = result.changes === undefined || result.changes.length === 0
+    ? '  already canonical'
+    : `  edits: ${result.changes.map((change) => change.detail).join('; ')}`
+  const note = result.note === undefined ? '' : `\n  note: ${result.note}`
+  return `${head}\n${edits}${note}`
 }
 
 /** Build all three tool definitions. */
@@ -543,6 +558,62 @@ export function buildCheckdigitTools(): ToolSet {
     },
   })
 
+  const checkdigit_normalize = defineTool({
+    name: 'checkdigit_normalize',
+    description: 'Rewrite an identifier in the form its own standard prints it, and report every edit: upper case, '
+      + 'stray spaces/dashes/dots removed, and the separator layout the standard defines — IBAN groups of four, '
+      + 'ORCID 4-4-4-4, ISSN 4-4, CAS n-2-1. Identifiers whose printed form is not fixed by a standard (ISBN-10/13, '
+      + 'card numbers, IMEIs) come back as one unbroken run with a `note` saying what would be needed instead of a '
+      + 'guessed grouping, so `grouping` is absent for them. The verdict is recomputed on the canonical form, so '
+      + 'normalising never turns an invalid number into a valid one; `changes` is empty when the input was already '
+      + 'canonical. Pure local arithmetic.',
+    parameters: {
+      value: {
+        type: 'string',
+        required: true,
+        description: 'The identifier as typed, e.g. "gb82 west 1234 5698 7654 32", "0000000210286941" or '
+          + '"7732185". Case and separators are irrelevant.',
+      },
+      scheme: {
+        type: 'string',
+        enum: [...SCHEME_IDS],
+        description: 'Optional scheme id; omit to auto-detect (same rules as checkdigit_validate).',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          scheme: { type: 'string', required: true },
+          normalized: { type: 'string' },
+          changed: { type: 'boolean' },
+          changes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                kind: { type: 'string', enum: ['case', 'separators', 'grouping'], required: true },
+                detail: { type: 'string', required: true },
+              },
+            },
+          },
+          checkDigit: { type: 'string' },
+          expected: { type: 'string' },
+          grouping: { type: 'string' },
+          note: { type: 'string' },
+          error: { type: 'string' },
+        },
+      },
+      render: (_args: { value: string; scheme?: string }, value: unknown) => [{ type: 'text', text: renderNormalize(_args, value) }],
+    },
+    async execute(args: { value: string; scheme?: SchemeId }): Promise<NormalizeResult> {
+      return normalizeIdentifier(args.value, args.scheme)
+    },
+  })
+
   const checkdigit_info = defineTool({
     name: 'checkdigit_info',
     description: 'Describe the supported check-digit schemes: identifier lengths, payload formats, check-digit '
@@ -621,7 +692,7 @@ export function buildCheckdigitTools(): ToolSet {
     },
   })
 
-  return { checkdigit_generate, checkdigit_validate, checkdigit_repair, checkdigit_batch, checkdigit_scan, checkdigit_info, isbn_convert }
+  return { checkdigit_generate, checkdigit_validate, checkdigit_repair, checkdigit_batch, checkdigit_scan, checkdigit_normalize, checkdigit_info, isbn_convert }
 }
 
 /** Re-export for consumers that need the formatter directly. */
